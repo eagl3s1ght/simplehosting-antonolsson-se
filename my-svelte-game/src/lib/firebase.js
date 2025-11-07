@@ -47,7 +47,17 @@ export function listenFlows(setFlows) {
 }
 
 export function updateAngle(playerId, newAngle) {
-  set(ref(db, `${ROOM}/players/${playerId}/angle`), newAngle);
+  if (!playerId || typeof newAngle !== 'number' || isNaN(newAngle)) {
+    console.warn('Invalid updateAngle call', { playerId, newAngle });
+    return;
+  }
+  try {
+    set(ref(db, `${ROOM}/players/${playerId}/angle`), newAngle).catch(err => {
+      console.warn('Failed to update angle:', err.message);
+    });
+  } catch (err) {
+    console.warn('updateAngle error:', err.message);
+  }
 }
 
 export function incrementScore(playerId) {
@@ -57,17 +67,19 @@ export function incrementScore(playerId) {
   });
 }
 
-export function spawnFlow() {
+export function decrementScore(playerId) {
+  runTransaction(ref(db, `${ROOM}/players/${playerId}`), (player) => {
+    if (player) player.score = Math.max(0, (player.score || 0) - 1);
+    return player;
+  });
+}
+
+export function spawnFlow(isEvil = false) {
   const flowRef = ref(db, `${ROOM}/flows`);
-  runTransaction(ref(db, `${ROOM}/lastSpawn`), (lastTime) => {
-    const now = Date.now();
-    if (!lastTime || now - lastTime > 3000) {  // Spawn every 3s
-      push(flowRef, {
-        angle: Math.random() * Math.PI * 2,
-        spawnTime: now
-      });
-      return now;
-    }
-    return lastTime;
+  const now = Date.now();
+  push(flowRef, {
+    angle: Math.random() * Math.PI * 2,
+    spawnTime: now,
+    isEvil: isEvil
   });
 }
