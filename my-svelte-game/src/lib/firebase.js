@@ -25,7 +25,9 @@ export async function joinGame(setState) {
       id: playerId,
       name: `Player ${Math.floor(Math.random()*100)}`,
       angle: Math.random() * Math.PI * 2,  // Random start
-      score: 0
+      score: 0,
+      layer: 0,  // Start at innermost layer
+      colorIndex: Math.floor(Math.random() * 12) // Tentative; UI will adjust to unused
     };
     set(ref(db, `${ROOM}/players/${playerId}`), playerData);
     return { playerId, playerData };
@@ -60,6 +62,34 @@ export function updateAngle(playerId, newAngle) {
   }
 }
 
+export function updateLayer(playerId, newLayer) {
+  if (!playerId || typeof newLayer !== 'number' || isNaN(newLayer)) {
+    console.warn('Invalid updateLayer call', { playerId, newLayer });
+    return;
+  }
+  try {
+    set(ref(db, `${ROOM}/players/${playerId}/layer`), newLayer).catch(err => {
+      console.warn('Failed to update layer:', err.message);
+    });
+  } catch (err) {
+    console.warn('updateLayer error:', err.message);
+  }
+}
+
+export function updateColor(playerId, colorIndex) {
+  if (!playerId || typeof colorIndex !== 'number' || isNaN(colorIndex)) {
+    console.warn('Invalid updateColor call', { playerId, colorIndex });
+    return;
+  }
+  try {
+    set(ref(db, `${ROOM}/players/${playerId}/colorIndex`), colorIndex).catch(err => {
+      console.warn('Failed to update color:', err.message);
+    });
+  } catch (err) {
+    console.warn('updateColor error:', err.message);
+  }
+}
+
 export function incrementScore(playerId) {
   runTransaction(ref(db, `${ROOM}/players/${playerId}`), (player) => {
     if (player) player.score = (player.score || 0) + 1;
@@ -77,9 +107,12 @@ export function decrementScore(playerId) {
 export function spawnFlow(isEvil = false) {
   const flowRef = ref(db, `${ROOM}/flows`);
   const now = Date.now();
+  // Assign a random layer (0-4). Frontend knows NUM_LAYERS.
+  const layer = Math.floor(Math.random() * 5);
   push(flowRef, {
     angle: Math.random() * Math.PI * 2,
     spawnTime: now,
-    isEvil: isEvil
+    isEvil: isEvil,
+    layer
   });
 }
