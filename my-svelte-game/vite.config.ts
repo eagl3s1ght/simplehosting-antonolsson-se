@@ -4,10 +4,12 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
 import { sveltekit } from '@sveltejs/kit/vite';
+import errorReporterPlugin from './vite-error-plugin.js';
 
 export default defineConfig({
 	plugins: [
 		tailwindcss(),
+		errorReporterPlugin(),
 		sveltekit(),
 		devtoolsJson(),
 		paraglideVitePlugin({
@@ -15,6 +17,22 @@ export default defineConfig({
 			outdir: './src/lib/paraglide'
 		})
 	],
+	server: {
+		hmr: {
+			overlay: true
+		},
+		watch: {
+			usePolling: true
+		}
+	},
+	build: {
+		rollupOptions: {
+			onwarn(warning, warn) {
+				console.error('\x1b[31m%s\x1b[0m', '[vite]', warning);
+				warn(warning);
+			}
+		}
+	},
 	test: {
 		expect: { requireAssertions: true },
 		projects: [

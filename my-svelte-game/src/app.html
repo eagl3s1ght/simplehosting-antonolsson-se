@@ -1,4 +1,5 @@
 <!doctype html>
+<script type="module">import '/src/error-handler.js'</script>
 <html lang="%paraglide.lang%">
 	<head>
 		<meta charset="utf-8" />
@@ -7,6 +8,9 @@
 	</head>
 	<body data-sveltekit-preload-data="hover">
 		<h1>Beep Boop!</h1>
-		<div style="display: contents">%sveltekit.body%</div>
+		<ErrorBoundary let:error={err}>
+			<div style="display: contents">%sveltekit.body%</div>
+		</ErrorBoundary>
+
 	</body>
 </html>
