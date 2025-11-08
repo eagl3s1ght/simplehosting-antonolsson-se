@@ -1,16 +1,29 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, recordCatch, recordEvilHit, pruneOldFlows, fetchHighscores, removeAllFlows, updateFlowLayer, removeLayer5Flows, cleanupPlayerMeta, setPlayerActive, setLastSeen, analyzeDbSize, auth, db, ROOM } from '$lib/firebase.js';
+  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, recordCatch, recordEvilHit, pruneOldFlows, fetchHighscores, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, auth, db, ROOM } from '$lib/firebase.js';
+  import { ref, set, goOffline } from 'firebase/database';
+  import { browser, dev } from '$app/environment';
+
+  // Debug-only imports (conditional, tree-shaken in production)
+  let removeAllFlows: any, removeLayer5Flows: any, analyzeDbSize: any;
+  if (dev) {
+    import('$lib/firebase.js').then(m => {
+      removeAllFlows = m.removeAllFlows;
+      removeLayer5Flows = m.removeLayer5Flows;
+      analyzeDbSize = m.analyzeDbSize;
+    });
+  }
+
   async function debugRemoveAllFlows() {
+    if (!dev || !removeAllFlows) return;
     const removed = await removeAllFlows();
     console.log(`Removed ${removed} flows from DB.`);
   }
   async function debugRemoveLayer5() {
+    if (!dev || !removeLayer5Flows) return;
     const removed = await removeLayer5Flows();
     console.log(`Removed ${removed} layer-5 flows from DB.`);
   }
-  import { ref, set, goOffline } from 'firebase/database';
-  import { browser } from '$app/environment';
 
   // Types (lightweight to silence TS diagnostics)
   type Player = { id: string; name: string; angle: number; score: number; layer?: number; colorIndex?: number; createdAt?: number; active?: boolean; lastSeen?: number; meta?: any };
@@ -58,6 +71,7 @@
   // Local cache to retain flows even if they fall out of the DB query window
   const flowCache: Map<string, Flow> = new Map();
   let myPlayer: { playerId: string; playerData: Player } | null = null;
+  let showInactiveDialog = false; // true when player marked inactive
   let keys: Record<string, boolean> = {};
   const PIPE_WIDTH = 0.4;
   
@@ -93,7 +107,8 @@
   let myAngle = 0;
   let myLayer = 0; // Current layer (0-4)
   let myColorIndex: number | null = null;
-  let debugOpen = true; // debug panel visibility
+  // Debug panel state (only used in dev builds)
+  let debugOpen = dev ? false : undefined as any;
   // Highscores state
   type Highscore = { id:string; totalCatches?:number; evilHits?:number; name?:string; colorIndex?:number; country?: string; lastUpdated?:number };
   let highscores: Highscore[] = [];
@@ -179,6 +194,10 @@
   // Queue state for players when all colors are taken
   let isQueued = false;      // true if we are waiting for a free color slot
   let canClaimSpot = false;  // true if a color became available while queued
+  
+  // Game cleanup reference (populated in main onMount)
+  let stopGameFn: (() => void) | null = null;
+  
   function claimFreeColor() {
     if (!myPlayer) return;
     // Discover used colors
@@ -201,8 +220,10 @@
   // Persist debug panel state in session storage
   onMount(() => {
     if (browser) {
-      const saved = sessionStorage.getItem('debugOpen');
-      if (saved === '0') debugOpen = false;
+      if (dev) {
+        const saved = sessionStorage.getItem('debugOpen');
+        if (saved === '1') debugOpen = true; // restore open state
+      }
       const hsSaved = sessionStorage.getItem('hsLastLoaded');
       if (hsSaved) hsLastLoaded = parseInt(hsSaved) || 0;
       const idleSaved = localStorage.getItem('idleEnabled');
@@ -232,13 +253,29 @@
     }, 250);
 
     // Focus/blur listeners
-    const onFocus = () => { windowActive = true; };
-    const onBlur = () => { windowActive = false; };
+    const onFocus = () => { 
+      windowActive = true; 
+    };
+    const onBlur = () => { 
+      windowActive = false;
+      // Mark player inactive and disconnect when window loses focus
+      if (myPlayer?.playerId) {
+        try { setPlayerActive(myPlayer.playerId, false); } catch {}
+        if (stopGameFn) stopGameFn(); // Stop render loop and intervals
+        console.log('[Window] Lost focus, marked inactive and stopped game');
+      }
+    };
     window.addEventListener('focus', onFocus);
     window.addEventListener('blur', onBlur);
     const onVisibility = () => {
       hidden = document.hidden;
       windowActive = !hidden && document.hasFocus();
+      // Also disconnect when tab becomes hidden
+      if (hidden && myPlayer?.playerId) {
+        try { setPlayerActive(myPlayer.playerId, false); } catch {}
+        if (stopGameFn) stopGameFn(); // Stop render loop and intervals
+        console.log('[Window] Tab hidden, marked inactive and stopped game');
+      }
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
@@ -249,13 +286,13 @@
       document.removeEventListener('visibilitychange', onVisibility);
     };
   });
-  $: if (browser) sessionStorage.setItem('debugOpen', debugOpen ? '1' : '0');
+  $: if (dev && browser) sessionStorage.setItem('debugOpen', debugOpen ? '1' : '0');
   $: if (browser) sessionStorage.setItem('hsLastLoaded', String(hsLastLoaded));
   $: if (browser && storageLoaded) {
     localStorage.setItem('idleEnabled', idleEnabled ? '1' : '0');
-    console.log('[Idle] Saved setting to storage:', idleEnabled);
+    if (dev) console.log('[Idle] Saved setting to storage:', idleEnabled);
   }
-  function toggleDebug() { debugOpen = !debugOpen; }
+  const toggleDebug = dev ? () => { debugOpen = !debugOpen; } : () => {};
   function hashUid(uid: string | undefined | null) {
     const s = typeof uid === 'string' ? uid : '';
     let h = 2166136261 >>> 0; // FNV-1a
@@ -503,6 +540,13 @@
       unsubPlayers = listenPlayers(p => {
         players = p;
         if (myPlayer) {
+          // Check if my player was marked inactive
+          const me = players.find(pl => pl.id === myPlayer!.playerId);
+          if (me && me.active === false && !showInactiveDialog) {
+            showInactiveDialog = true;
+            console.log('[Inactive] You have been marked inactive.');
+          }
+
           const used = new Set<number>();
           players.forEach(pl => { if (pl?.colorIndex != null) used.add(pl.colorIndex as number); });
           const totalColors = PLAYER_COLORS.length;
@@ -630,6 +674,22 @@
     let lastAngleUpdateTime = 0;
     let lastAngleSent = myAngle;
     let raf: number;
+
+    // Helper to stop game (for idle/blur)
+    function stopGame() {
+      try { unsubPlayers && unsubPlayers(); } catch {}
+      try { unsubFlows && unsubFlows(); } catch {}
+      try { clearInterval(spawnInterval); } catch {}
+      try { clearInterval(difficultyInterval); } catch {}
+      try { clearInterval(evilSpawnInterval); } catch {}
+      try { clearInterval(layer5CleanupInterval); } catch {}
+      try { if (presenceInterval) clearInterval(presenceInterval); } catch {}
+      try { goOffline(db); } catch {}
+      try { cancelAnimationFrame(raf); } catch {}
+    }
+    
+    // Make available to blur/visibility handlers
+    stopGameFn = stopGame;
 
     function loop() {
       if (isIdle) return; // stop rendering & DB sync when idle
@@ -997,6 +1057,7 @@
   });
 </script>
 
+{#if dev}
 <div style="position: absolute; top: 10px; right: 10px; z-index: 10;">
   <button on:click={toggleDebug} style="background:#333; color:#fff; border:none; border-radius:6px; padding:6px 10px; cursor:pointer; margin-bottom:6px; width:100%;">
     {debugOpen ? 'Hide Debug' : 'Show Debug'}
@@ -1159,7 +1220,21 @@
   </div>
   </div>
 </div>
+{/if}
 <canvas id="gameCanvas" class="mx-auto block" width={CANVAS_SIZE} height={CANVAS_SIZE}></canvas>
+
+<!-- Inactive Player Dialog -->
+{#if showInactiveDialog}
+<div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); z-index: 100; display: flex; align-items: center; justify-content: center;">
+  <div style="background: #222; color: #fff; padding: 30px 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); text-align: center; max-width: 400px;">
+    <h2 style="margin: 0 0 16px 0; font-size: 24px; color: #f99;">You've Been Marked Inactive</h2>
+    <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.5;">Your session was paused due to inactivity. Click the button below to refresh and rejoin the game.</p>
+    <button on:click={() => location.reload()} style="background: #4CAF50; color: #fff; border: none; border-radius: 6px; padding: 12px 24px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.2s;">
+      Refresh & Rejoin
+    </button>
+  </div>
+</div>
+{/if}
 
 <!-- Mobile Controls (bottom-center) -->
 <div style="position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px;">
