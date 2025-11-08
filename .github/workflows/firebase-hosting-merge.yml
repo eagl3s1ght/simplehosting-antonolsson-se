@@ -11,6 +11,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ./my-svelte-game
+      - name: Build
+        run: npm run build
+        working-directory: ./my-svelte-game
+      - name: Move build output
+        run: |
+          rm -rf public
+          mkdir -p public
+          cp -r my-svelte-game/build/* public/
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
