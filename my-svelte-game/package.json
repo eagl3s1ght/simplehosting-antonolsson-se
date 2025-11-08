@@ -14,7 +14,8 @@
 		"lint": "prettier --check . && eslint .",
 		"test:unit": "vitest",
 		"test": "npm run test:unit -- --run && npm run test:e2e",
-		"test:e2e": "playwright test"
+		"test:e2e": "playwright test",
+		"_postinstall": "patch-package"
 	},
 	"devDependencies": {
 		"@eslint/compat": "^1.4.0",
@@ -47,7 +48,8 @@
 		"vite": "^7.1.10",
 		"vite-plugin-devtools-json": "^1.0.0",
 		"vitest": "^4.0.5",
-		"vitest-browser-svelte": "^2.0.1"
+		"vitest-browser-svelte": "^2.0.1",
+		 "patch-package": "^8.0.0"
 	},
 	"dependencies": {
 		"firebase": "^12.5.0"
