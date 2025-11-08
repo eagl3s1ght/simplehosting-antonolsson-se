@@ -1,5 +1,9 @@
 {
   "devDependencies": {
     "patch-package": "^8.0.1"
+  },
+  "dependencies": {
+    "svelte-flag-icons": "^3.0.0",
+    "unique-names-generator": "^4.7.1"
   }
 }
