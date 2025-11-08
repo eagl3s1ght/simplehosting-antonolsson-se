@@ -282,6 +282,8 @@
 
   // Difficulty system
   let difficulty = 1;
+  const DIFFICULTY_INTERVAL_MS = 60000; // 60s between automatic difficulty increases
+  let difficultyLastAutoIncreaseAt = 0; // timestamp of last automatic difficulty increase
   // Reactive: difficulty multiplier recalculated from difficulty level
   $: difficultySpeedMultiplier = Math.pow(1.05, Math.max(0, difficulty - 1));
   let gameStartTime = 0;
@@ -486,15 +488,17 @@
 
     // Set game start time
     gameStartTime = Date.now();
+  difficultyLastAutoIncreaseAt = gameStartTime;
 
     // Increase difficulty every minute
     const difficultyInterval = setInterval(() => {
       if (difficulty < 10) {
         difficulty++;
+        difficultyLastAutoIncreaseAt = Date.now();
         console.log('Difficulty increased to:', difficulty);
         // difficultySpeedMultiplier updates reactively from difficulty
       }
-    }, 60000); // Every minute
+    }, DIFFICULTY_INTERVAL_MS); // Every minute
 
     // Auto burst: every 10s spawn a burst sized to players
     function countOnlinePlayers() {
@@ -739,6 +743,40 @@
         ctx.fillText(`${name}: ${score}`, 20, 40 + i * 25);
       });
 
+      // Difficulty countdown bar (bottom of canvas)
+      {
+        const nowMs = now;
+        const elapsedSinceLast = nowMs - difficultyLastAutoIncreaseAt;
+        const remainingMs = Math.max(0, DIFFICULTY_INTERVAL_MS - elapsedSinceLast);
+        const remainingFrac = remainingMs / DIFFICULTY_INTERVAL_MS; // 1 -> just reset, 0 -> about to increase
+        const barHeight = 14;
+        const padding = 8;
+        const y = canvas.height - barHeight - padding;
+        // Background bar (full width)
+        ctx.fillStyle = '#222';
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(0, y, canvas.width, barHeight);
+        // Foreground remaining width (shrinks as we approach next level)
+        ctx.globalAlpha = 0.95;
+        const remainingWidth = canvas.width * remainingFrac;
+        ctx.fillStyle = '#ffcc00';
+        ctx.fillRect(0, y, remainingWidth, barHeight);
+        // Border
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#555';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(0.5, y + 0.5, canvas.width - 1, barHeight - 1);
+        // Text above bar
+        ctx.fillStyle = '#fff';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        const secondsRemaining = Math.ceil(remainingMs / 1000);
+        const label = difficulty < 10
+          ? `Difficulty ${difficulty}/10  •  Next in ${secondsRemaining}s`
+          : `Difficulty ${difficulty}/10 (MAX)`;
+        ctx.fillText(label, canvas.width / 2, y - 6);
+      }
+
       // Throttled angle sync
       if (myPlayer && myPlayer.playerId) {
         const now2 = Date.now();
@@ -848,7 +886,7 @@
   <button style="margin-top: 14px; width: 100%; padding: 8px; background: #444; color: #fff; border: none; border-radius: 4px; cursor: pointer;" on:click={() => { spawnBurst(8, 0); }}>
     Create Flow Burst
   </button>
-  <button style="margin-top: 8px; width: 100%; padding: 8px; background: #661111; color: #fff; border: none; border-radius: 4px; cursor: pointer;" on:click={() => { spawnBurst(8, 0.3); }}>
+  <button style="margin-top: 8px; width: 100%; padding: 8px; background: #661111; color: #fff; border: none; border-radius: 4px; cursor: pointer;" on:click={() => { spawnBurst(8, 1); }}>
     Create Evil Flow Burst
   </button>
   <div style="margin-top: 10px; font-size: 13px;">
