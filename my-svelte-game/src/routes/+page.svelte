@@ -154,9 +154,48 @@
     if (!owners || owners.length === 0) return null;
     const labels = owners.map(pl => {
       if (myPlayer && pl.id === myPlayer.playerId) return 'you';
-      return (pl.name && pl.name.trim()) ? pl.name.trim() : (pl.id?.slice(0,6) || 'player');
+      // Prefer player.name; fallback to a pretty name instead of raw UUID snippet
+      return (pl.name && pl.name.trim()) ? pl.name.trim() : prettyName(pl.id);
     });
     return labels.join(', ');
+  }
+
+  // Country code (AA) -> flag emoji (fallback to white flag)
+  function countryCodeToFlagEmoji(cc: string | null | undefined): string {
+    if (!cc || cc.length !== 2) return '🏳️';
+    const base = 0x1f1e6;
+    const a = cc[0].toUpperCase().charCodeAt(0) - 65;
+    const b = cc[1].toUpperCase().charCodeAt(0) - 65;
+    if (a < 0 || a > 25 || b < 0 || b > 25) return '🏳️';
+    return String.fromCodePoint(base + a) + String.fromCodePoint(base + b);
+  }
+
+  function colorForPlayer(p: Player): string {
+    const idx = (myPlayer && p.id === myPlayer.playerId) ? (myColorIndex ?? p.colorIndex) : p.colorIndex;
+    if (idx != null && PLAYER_COLORS[idx]) return PLAYER_COLORS[idx].hex;
+    return '#888';
+  }
+
+  // Queue state for players when all colors are taken
+  let isQueued = false;      // true if we are waiting for a free color slot
+  let canClaimSpot = false;  // true if a color became available while queued
+  function claimFreeColor() {
+    if (!myPlayer) return;
+    // Discover used colors
+    const used = new Set<number>();
+    players.forEach(pl => { if (pl?.colorIndex != null) used.add(pl.colorIndex as number); });
+    if (used.size >= PLAYER_COLORS.length) return; // still full
+    // Find first free color
+    let chosen: number | null = null;
+    for (let i = 0; i < PLAYER_COLORS.length; i++) { if (!used.has(i)) { chosen = i; break; } }
+    if (chosen == null) return;
+    myColorIndex = chosen;
+    updateColor(myPlayer.playerId, chosen);
+    try { setPlayerActive(myPlayer.playerId, true); } catch {}
+    try { set(ref(db, `${ROOM}/players/${myPlayer.playerId}/queued`), null); } catch {}
+    isQueued = false;
+    canClaimSpot = false;
+    console.log('[Queue] Claimed color spot', chosen);
   }
 
   // Persist debug panel state in session storage
@@ -284,9 +323,14 @@
   let difficulty = 1;
   const DIFFICULTY_INTERVAL_MS = 60000; // 60s between automatic difficulty increases
   let difficultyLastAutoIncreaseAt = 0; // timestamp of last automatic difficulty increase
+  let pauseAccumulatedMs = 0;           // total paused time since page load
+  let pauseStartedAt: number | null = null; // when current pause started
+  let pauseAccumAtDiffStart = 0;        // pause total at last difficulty change
   // Reactive: difficulty multiplier recalculated from difficulty level
   $: difficultySpeedMultiplier = Math.pow(1.05, Math.max(0, difficulty - 1));
   let gameStartTime = 0;
+  let gameSessionStartTime = 0;         // sessions gate scoreboard membership
+  let pauseForNoPlayers = false;        // true when no active players
 
   // Hurt animation state
   let hurtUntil = 0; // Timestamp when hurt animation ends
@@ -314,12 +358,22 @@
   let flowBallsSpawned = 0;
   let flowBallsSpawnedHistory: number[] = [];
   let flowBallsSpawnedLastMinute = 0;
+  let evilFlowBallsSpawned = 0;
+  let evilFlowBallsHistory: number[] = [];
+  let evilFlowBallsLastMinute = 0;
   function recordFlowSpawn() {
     flowBallsSpawned++;
     flowBallsSpawnedHistory.push(Date.now());
     const cutoff = Date.now() - 60000;
     flowBallsSpawnedHistory = flowBallsSpawnedHistory.filter(t => t > cutoff);
     flowBallsSpawnedLastMinute = flowBallsSpawnedHistory.length;
+  }
+  function recordEvilFlowSpawn() {
+    evilFlowBallsSpawned++;
+    evilFlowBallsHistory.push(Date.now());
+    const cutoff = Date.now() - 60000;
+    evilFlowBallsHistory = evilFlowBallsHistory.filter(t => t > cutoff);
+    evilFlowBallsLastMinute = evilFlowBallsHistory.length;
   }
   // Burst spawner: create N flows over 500ms with random jitter and angle-influenced speed offset
   function spawnBurst(count: number, evilFraction = 0) {
@@ -334,6 +388,7 @@
         const extraSpeed = 1 + (speedBias - 0.5) * 0.2; // +/-10%
         spawnFlow(isEvil, { speedBias: Number(extraSpeed.toFixed(3)) });
         recordFlowSpawn();
+        if (isEvil) recordEvilFlowSpawn();
       }, delay);
     }
   }
@@ -447,22 +502,43 @@
 
       unsubPlayers = listenPlayers(p => {
         players = p;
-        // If my color isn't set yet or conflicts and there's a free color, pick one.
         if (myPlayer) {
           const used = new Set<number>();
-          players.forEach(pl => { if (pl?.colorIndex != null) used.add(pl.colorIndex); });
-          if (myColorIndex == null || (used.has(myColorIndex) && players.some(pl => pl.id !== myPlayer!.playerId && pl.colorIndex === myColorIndex))) {
-            // find first free color
-            let chosen: number | null = null;
-            for (let i = 0; i < PLAYER_COLORS.length; i++) {
-              if (!used.has(i)) { chosen = i; break; }
+          players.forEach(pl => { if (pl?.colorIndex != null) used.add(pl.colorIndex as number); });
+          const totalColors = PLAYER_COLORS.length;
+          const hasFree = used.size < totalColors;
+          // If we do not have a color yet
+          if (myColorIndex == null) {
+            if (!hasFree) {
+              // Enter queue if not already queued
+              if (!isQueued) {
+                isQueued = true;
+                try { set(ref(db, `${ROOM}/players/${myPlayer.playerId}/queued`), true); } catch {}
+                try { setPlayerActive(myPlayer.playerId, false); } catch {}
+                console.log('[Queue] All colors taken. You are queued.');
+              }
+              canClaimSpot = false;
+            } else {
+              // Free color exists
+              if (isQueued) {
+                // We were queued, now can claim manually
+                canClaimSpot = true;
+              } else {
+                // Auto assign on first join
+                let chosen: number | null = null;
+                for (let i = 0; i < totalColors; i++) { if (!used.has(i)) { chosen = i; break; } }
+                if (chosen != null) {
+                  myColorIndex = chosen;
+                  updateColor(myPlayer.playerId, chosen);
+                  try { setPlayerActive(myPlayer.playerId, true); } catch {}
+                  try { set(ref(db, `${ROOM}/players/${myPlayer.playerId}/queued`), null); } catch {}
+                  console.log('[Queue] Auto-assigned color', chosen);
+                }
+              }
             }
-            if (chosen == null) {
-              // fallback to random if all used
-              chosen = Math.floor(Math.random() * PLAYER_COLORS.length);
-            }
-            myColorIndex = chosen;
-            updateColor(myPlayer.playerId, chosen);
+          } else {
+            // Already have color: ensure flags reset
+            canClaimSpot = false;
           }
         }
       }) as any;
@@ -488,13 +564,17 @@
 
     // Set game start time
     gameStartTime = Date.now();
-  difficultyLastAutoIncreaseAt = gameStartTime;
+    gameSessionStartTime = gameStartTime;
+    difficultyLastAutoIncreaseAt = gameStartTime;
+    pauseAccumAtDiffStart = pauseAccumulatedMs;
 
     // Increase difficulty every minute
     const difficultyInterval = setInterval(() => {
+      if (pauseForNoPlayers) return; // freeze difficulty while paused
       if (difficulty < 10) {
         difficulty++;
         difficultyLastAutoIncreaseAt = Date.now();
+        pauseAccumAtDiffStart = pauseAccumulatedMs;
         console.log('Difficulty increased to:', difficulty);
         // difficultySpeedMultiplier updates reactively from difficulty
       }
@@ -508,11 +588,13 @@
         const ls = (pl as any)?.lastSeen;
         const fresh = typeof ls === 'number' ? (nowTs - ls) < 30000 : true; // 30s window
         return active && fresh;
-      }).length || 1;
+      }).length;
     }
 
     const spawnInterval = setInterval(() => {
+      if (pauseForNoPlayers) return; // don't spawn while paused
       const numPlayers = countOnlinePlayers();
+      if (numPlayers === 0) return; // safety
       const burstSize = Math.min(12, Math.max(3, numPlayers * 2));
       spawnBurst(burstSize, 0); // normal flows only
       console.debug(`Burst spawned ${burstSize} normal flows for ${numPlayers} players`);
@@ -520,8 +602,10 @@
 
     // Evil burst every minute if difficulty >=2
     const evilSpawnInterval = setInterval(() => {
+      if (pauseForNoPlayers) return; // paused
       if (difficulty >= 2) {
         const numPlayers = countOnlinePlayers();
+        if (numPlayers === 0) return;
         const burstSize = Math.min(16, Math.max(4, numPlayers * 2));
         const evilFraction = 0.4; // 40% evil inside this burst
         spawnBurst(burstSize, evilFraction);
@@ -553,6 +637,41 @@
       
       // Get current time at the start of the loop
       const now = Date.now();
+      // Update pause state from current players
+      const nowTs = now;
+      const online = players.some((pl) => {
+        const active = (pl as any)?.active !== false;
+        const ls = (pl as any)?.lastSeen;
+        const fresh = typeof ls === 'number' ? (nowTs - ls) < 30000 : true;
+        return active && fresh;
+      });
+      if (!online && !pauseForNoPlayers) {
+        pauseForNoPlayers = true;
+        pauseStartedAt = now;
+      } else if (online && pauseForNoPlayers) {
+        pauseForNoPlayers = false;
+        if (pauseStartedAt != null) {
+          pauseAccumulatedMs += now - pauseStartedAt;
+          pauseStartedAt = null;
+        }
+      }
+
+      // Session rollover at difficulty 10 after its countdown completes (account for pause)
+      if (difficulty === 10) {
+        const pausedSinceDiffStart = pauseAccumulatedMs - pauseAccumAtDiffStart;
+        const effectiveElapsed = Math.max(0, (now - difficultyLastAutoIncreaseAt) - pausedSinceDiffStart);
+        if (effectiveElapsed >= DIFFICULTY_INTERVAL_MS) {
+          const t = now;
+          difficulty = 1;
+          difficultyLastAutoIncreaseAt = t;
+          pauseAccumAtDiffStart = pauseAccumulatedMs;
+          gameSessionStartTime = t;
+          try { flowCache.clear(); } catch {}
+          try { scoredFlows.clear(); } catch {}
+          try { flowsToRemove.clear(); } catch {}
+          console.log('[Session] New session started');
+        }
+      }
       // Reflect keyboard state on mobile control visual pressed states
       mobileUpPressed = !!(keys.ArrowUp || keys.w || keys.W);
       mobileDownPressed = !!(keys.ArrowDown || keys.s || keys.S);
@@ -645,7 +764,7 @@
   const overshootPx = 240; // keep flows until further past canvas edge (doubled)
       flowCache.forEach((flow, id) => {
         if (flowsToRemove.has(id)) return; // collided -> skip
-        const age = now - flow.spawnTime;
+        const age = Math.max(0, (now - flow.spawnTime) - pauseAccumulatedMs);
         const progress = (age / currentFlowDuration()) * speedBiasForAngle(flow.angle);
   const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
   // If flow exits beyond the canvas (outside render radius), tag it as layer 5 once
@@ -672,8 +791,7 @@
       });
       
       activeFlows.forEach(flow => {
-        const age = now - flow.spawnTime;
-        const rawProgress = (age / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+        const rawProgress = (Math.max(0, (now - flow.spawnTime) - pauseAccumulatedMs) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
         const r = INNER_R + rawProgress * (MAX_FLOW_RADIUS - INNER_R);
         const headX = CENTER_X + Math.cos(flow.angle) * r;
         const headY = CENTER_Y + Math.sin(flow.angle) * r;
@@ -732,22 +850,73 @@
         flowsToRemove.forEach((fid) => { if (flowCache.has(fid)) flowCache.delete(fid); });
       }
 
-      // Scores overlay
-      ctx.fillStyle = '#fff';
-      ctx.font = '20px Arial';
-      ctx.textAlign = 'left';
-      players.forEach((p, i) => {
-        if (!p || !p.id) return;
-        const name = prettyName(p.id);
-        const score = typeof p.score === 'number' ? p.score : 0;
-        ctx.fillText(`${name}: ${score}`, 20, 40 + i * 25);
-      });
+      // Scores overlay (sorted by score desc): [flag] [name] [score] [-hits] (session + active filtering, grayed inactive)
+      {
+        const hsMap = new Map<string, Highscore>(highscores.map(h => [h.id, h]));
+        const list = [...players]
+          .filter(p => p && p.id)
+          .filter(p => {
+            const ls = (p as any)?.lastSeen;
+            const inSession = typeof ls === 'number' ? (ls >= gameSessionStartTime) : true;
+            return inSession;
+          })
+          .sort((a, b) => (b.score || 0) - (a.score || 0));
+        const leftPad = 20;
+        const topPad = 40;
+        const lineH = 24;
+        ctx.textAlign = 'left';
+        ctx.font = '16px Arial';
+        list.forEach((p, i) => {
+          const y = topPad + i * lineH;
+          const name = prettyName(p.id);
+          const score = typeof p.score === 'number' ? p.score : 0;
+          const hs = hsMap.get(p.id);
+          const hits = hs?.evilHits ?? 0;
+          const cc = hs?.country || getCountryFromMeta((p as any)?.meta) || null;
+          const flag = countryCodeToFlagEmoji(cc);
+          const activeFlag = (p as any)?.active !== false;
+          const ls = (p as any)?.lastSeen;
+          const fresh = typeof ls === 'number' ? (Date.now() - ls) < 30000 : true;
+          const currentlyActive = activeFlag && fresh;
+          ctx.globalAlpha = currentlyActive ? 1 : 0.45;
 
-      // Difficulty countdown bar (bottom of canvas)
+          let x = leftPad;
+          // Flag
+          ctx.fillStyle = '#fff';
+          ctx.fillText(flag, x, y);
+          x += ctx.measureText(flag).width + 8;
+          // Name
+          ctx.fillStyle = '#fff';
+          ctx.fillText(name, x, y);
+          const nameW = ctx.measureText(name).width;
+          // Underline in player's color
+          const underlineY = y + 3;
+          ctx.strokeStyle = colorForPlayer(p);
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x, underlineY);
+          ctx.lineTo(x + nameW, underlineY);
+          ctx.stroke();
+          x += nameW + 10;
+          // Score
+          const scoreStr = String(score);
+          ctx.fillStyle = '#fff';
+          ctx.fillText(scoreStr, x, y);
+          x += ctx.measureText(scoreStr).width + 8;
+          // -hits
+          const hitsStr = `-${hits}`;
+          ctx.fillStyle = '#f88';
+          ctx.fillText(hitsStr, x, y);
+          ctx.globalAlpha = 1;
+        });
+      }
+
+      // Difficulty countdown bar (bottom of canvas) - paused-aware
       {
         const nowMs = now;
-        const elapsedSinceLast = nowMs - difficultyLastAutoIncreaseAt;
-        const remainingMs = Math.max(0, DIFFICULTY_INTERVAL_MS - elapsedSinceLast);
+        const pausedSinceDiffStart = pauseAccumulatedMs - pauseAccumAtDiffStart;
+        const effectiveElapsedSinceLast = Math.max(0, (nowMs - difficultyLastAutoIncreaseAt) - pausedSinceDiffStart);
+        const remainingMs = Math.max(0, DIFFICULTY_INTERVAL_MS - effectiveElapsedSinceLast);
         const remainingFrac = remainingMs / DIFFICULTY_INTERVAL_MS; // 1 -> just reset, 0 -> about to increase
         const barHeight = 14;
         const padding = 8;
@@ -874,6 +1043,16 @@
         <div style={`width:16px;height:16px;border-radius:50%;background:${myColorIndex!=null?PLAYER_COLORS[myColorIndex].hex:'#888'};`}></div>
         <span style="font-size:13px;opacity:.8;">{myColorIndex!=null?PLAYER_COLORS[myColorIndex].name:'Unassigned'}</span>
       </div>
+      {#if isQueued}
+        <div style="margin-top:10px; background:#331a1a; padding:8px 10px; border:1px solid #552a2a; border-radius:6px; font-size:13px; line-height:1.4;">
+          <b style="color:#f99;">Queue</b><br />
+          {#if canClaimSpot}
+            <div style="margin-top:4px;">A color is free! <button style="background:#662222; color:#fff; border:1px solid #aa4444; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:12px;" on:click={claimFreeColor}>Claim Spot</button></div>
+          {:else}
+            Waiting for a free color slot... ({usedColors.size}/{PLAYER_COLORS.length} in use)
+          {/if}
+        </div>
+      {/if}
     {/if}
   </div>
   
@@ -892,6 +1071,8 @@
   <div style="margin-top: 10px; font-size: 13px;">
     <b>Flow Balls:</b> {flowBallsSpawned} total<br />
     Last minute: {flowBallsSpawnedLastMinute}
+    <br /><b>Evil Flows:</b> {evilFlowBallsSpawned} total · Last minute: {evilFlowBallsLastMinute}
+    <br />Ratio (evil/total last min): {flowBallsSpawnedLastMinute? ((evilFlowBallsLastMinute/flowBallsSpawnedLastMinute)*100).toFixed(1):'0.0'}%
   </div>
   <button style="margin-top: 8px; width: 100%; padding: 8px; background: #2e2e2e; color: #fff; border: 1px solid #555; border-radius: 4px; cursor: pointer;" on:click={logPlayersInfo}>
     Log Player Data to Console
