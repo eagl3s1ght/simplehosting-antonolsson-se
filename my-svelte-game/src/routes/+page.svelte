@@ -135,6 +135,24 @@
   let myColorIndex: number | null = null;
   let mySpeedBoost = 0; // +1% per caught flow (additive)
   
+  // Local co-op (Player 2) state
+  let localCoopEnabled = false;
+  let localCoopSupported = false;
+  let player2Active = false;
+  let player2Angle = 0;
+  let player2Layer = 0;
+  let player2LayerVisual = 0;
+  let player2ColorIndex: number | null = null;
+  let player2SpeedBoost = 0;
+  let player2Player: { playerId: string; playerData: any } | null = null;
+  let lastPlayer2LayerChange = 0;
+  
+  // Mobile controls for Player 2
+  let mobileP2UpPressed = false;
+  let mobileP2DownPressed = false;
+  let mobileP2LeftPressed = false;
+  let mobileP2RightPressed = false;
+  
   // Starfield background
   type Star = { x: number; y: number; size: number; opacity: number; twinkleSpeed: number; twinklePhase: number };
   let stars: Star[] = [];
@@ -366,6 +384,106 @@
       window.open('https://www.youtube.com/watch?v=HuFYqnbVbzY', '_blank');
     }
     closeContextMenu();
+  }
+  
+  // Local co-op functions
+  function checkLocalCoopSupport() {
+    if (typeof navigator === 'undefined') return false;
+    // PC utan touch = numpad stöd
+    // Mobil med touch = on-screen controls
+    const hasTouch = navigator.maxTouchPoints > 0;
+    const isMobile = hasTouch && window.innerWidth < 768;
+    localCoopSupported = true; // Stöd både PC och mobil
+    return true;
+  }
+  
+  async function startLocalCoop() {
+    if (!localCoopSupported) {
+      alert('Lokal flerspelarläge finns bara på kompatibla enheter. Prova på en PC med tangentbord eller mobil enhet!');
+      return;
+    }
+    
+    if (!myPlayer) {
+      alert('Du måste vara inloggad som spelare #1 först!');
+      return;
+    }
+    
+    // Hitta en ledig färg för spelare #2
+    const used = new Set<number>();
+    players.forEach(pl => { if (pl?.colorIndex != null) used.add(pl.colorIndex as number); });
+    botPlayers.forEach(bot => { if (bot.colorIndex != null) used.add(bot.colorIndex); });
+    
+    let chosenColor: number | null = null;
+    for (let i = 0; i < PLAYER_COLORS.length; i++) {
+      if (!used.has(i)) { chosenColor = i; break; }
+    }
+    
+    if (chosenColor === null) {
+      alert('Alla färger är upptagna! Ingen plats för spelare #2.');
+      return;
+    }
+    
+    try {
+      // Skapa spelare #2
+      const player2Id = `local-p2-${myPlayer.playerId}`;
+      const startAngle = getNestAngle(chosenColor);
+      const startLayer = MAX_LAYERS - 1;
+      
+      const playerData = {
+        id: player2Id,
+        angle: startAngle,
+        score: 0,
+        layer: startLayer,
+        colorIndex: chosenColor,
+        createdAt: Date.now(),
+        active: true,
+        lastSeen: Date.now(),
+        evilHits: 0,
+        isBot: false,
+        isLocalCoop: true,
+        createdBy: myPlayer.playerId,
+        meta: {
+          country: null,
+          language: null,
+          creationTime: null,
+          lastSignInTime: null
+        }
+      };
+      
+      await set(ref(db, `${ROOM}/players/${player2Id}`), playerData);
+      
+      player2Player = { playerId: player2Id, playerData };
+      player2Angle = startAngle;
+      player2Layer = startLayer;
+      player2LayerVisual = startLayer;
+      player2ColorIndex = chosenColor;
+      player2SpeedBoost = 0;
+      player2Active = true;
+      localCoopEnabled = true;
+      
+      console.log('[LOCAL COOP] Player 2 started:', chosenColor);
+    } catch (err) {
+      console.error('Failed to start local coop:', err);
+      alert('Kunde inte starta lokal flerspelarläge. Försök igen.');
+    }
+  }
+  
+  async function stopLocalCoop() {
+    if (!player2Player) return;
+    
+    try {
+      // Ta bort spelare #2 från databasen
+      await set(ref(db, `${ROOM}/players/${player2Player.playerId}`), null);
+      
+      player2Player = null;
+      player2Active = false;
+      localCoopEnabled = false;
+      player2ColorIndex = null;
+      
+      console.log('[LOCAL COOP] Player 2 stopped');
+    } catch (err) {
+      console.error('Failed to stop local coop:', err);
+    }
   }
 
   // Persist debug panel state in session storage
@@ -773,6 +891,54 @@
       }
     }
   }
+  
+  function checkScorePlayer2(flow: Flow) {
+    if (!player2Player || !localCoopEnabled || !player2Active) return;
+    
+    const flowId = `${flow.spawnTime}_${flow.angle.toFixed(4)}`;
+    if (scoredFlows.has(flowId) || flowsToRemove.has(flowId)) return;
+    
+    const now = Date.now();
+    const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+    const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
+    const targetRadius = INNER_R + FIXED_LAYER_SPACING * (player2Layer + 1);
+    
+    const R_WINDOW = COLLISION_RADIUS_TOLERANCE;
+    if (flowRadius >= (targetRadius - R_WINDOW) && flowRadius <= (targetRadius + R_WINDOW)) {
+      if (checkCollision(flow.angle, player2Angle)) {
+        scoredFlows.add(flowId);
+        flowsToRemove.add(flowId);
+        
+        if (flow.isEvil) {
+          decrementScore(player2Player.playerId);
+          recordEvilHit(player2Player.playerId);
+          incrementSessionEvilHits(player2Player.playerId);
+          console.debug('[P2] HIT BY EVIL FLOW!', {
+            flowId,
+            flowAngle: flow.angle,
+            playerAngle: player2Angle,
+            layer: player2Layer
+          });
+        } else {
+          incrementScore(player2Player.playerId);
+          player2SpeedBoost++;
+          recordCatch(
+            player2Player.playerId,
+            player2ColorIndex ?? undefined,
+            undefined
+          );
+          console.debug('[P2] COLLISION! Flow caught', {
+            flowId,
+            flowAngle: flow.angle,
+            playerAngle: player2Angle,
+            progress: progress.toFixed(3),
+            layer: player2Layer,
+            speedBoost: player2SpeedBoost
+          });
+        }
+      }
+    }
+  }
 
   // Bot AI logic (handles all active bots)
   function updateBotAI(now: number) {
@@ -978,6 +1144,9 @@
     ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
     canvas.width = CANVAS_SIZE;
     canvas.height = CANVAS_SIZE;
+    
+    // Check local co-op support
+    checkLocalCoopSupport();
     
     // Initialize starfield
     stars = [];
@@ -1295,6 +1464,13 @@
         updateLayer(myPlayer.playerId, myLayer);
       }
       
+      // Check Player 2 layer validation
+      if (localCoopEnabled && player2Active && player2Player && player2Layer < minAllowedLayer) {
+        player2Layer = minAllowedLayer;
+        player2LayerVisual = player2Layer;
+        updateLayer(player2Player.playerId, player2Layer);
+      }
+      
       // Check if bots are on layers that no longer exist and move them to nearest valid layer
       botPlayers.forEach((bot) => {
         if (bot.layer < minAllowedLayer) {
@@ -1406,6 +1582,45 @@
         // Snap to target when very close to avoid floating point drift
         if (Math.abs(myLayer - myLayerVisual) < 0.01) {
           myLayerVisual = myLayer;
+        }
+        
+        // Player 2 controls (numpad on PC, mobile buttons on touch devices)
+        if (localCoopEnabled && player2Active && player2Player) {
+          const hasTouch = navigator.maxTouchPoints > 0;
+          const effectiveP2Speed = debugSpeed * (1 + player2SpeedBoost * 0.01);
+          
+          // Rotation controls
+          // PC: Numpad 4 (left), Numpad 6 (right)
+          // Mobile: on-screen buttons
+          if (keys['4'] || keys.Numpad4 || mobileP2LeftPressed) {
+            player2Angle = normalizeAngle(player2Angle - effectiveP2Speed);
+            if (player2Player) updateAngle(player2Player.playerId, player2Angle);
+          }
+          if (keys['6'] || keys.Numpad6 || mobileP2RightPressed) {
+            player2Angle = normalizeAngle(player2Angle + effectiveP2Speed);
+            if (player2Player) updateAngle(player2Player.playerId, player2Angle);
+          }
+          
+          // Layer switching
+          // PC: Numpad 8 (up), Numpad 2 (down)
+          // Mobile: on-screen buttons
+          if ((keys['8'] || keys.Numpad8 || mobileP2UpPressed || keys['2'] || keys.Numpad2 || mobileP2DownPressed) && now - lastPlayer2LayerChange > 200) {
+            if ((keys['8'] || keys.Numpad8 || mobileP2UpPressed) && player2Layer < maxAllowedLayer) {
+              player2Layer++;
+              lastPlayer2LayerChange = now;
+              if (player2Player) updateLayer(player2Player.playerId, player2Layer);
+            } else if ((keys['2'] || keys.Numpad2 || mobileP2DownPressed) && player2Layer > minAllowedLayer) {
+              player2Layer--;
+              lastPlayer2LayerChange = now;
+              if (player2Player) updateLayer(player2Player.playerId, player2Layer);
+            }
+          }
+          
+          // Smooth layer transition for player 2
+          player2LayerVisual += (player2Layer - player2LayerVisual) * layerTransitionSpeed;
+          if (Math.abs(player2Layer - player2LayerVisual) < 0.01) {
+            player2LayerVisual = player2Layer;
+          }
         }
 
       // Update bot AI (for all active bots)
@@ -1681,6 +1896,11 @@
         activeFlows.forEach(checkNestCollisions);
         // Remove collided flows from cache immediately
         flowsToRemove.forEach((fid) => { if (flowCache.has(fid)) flowCache.delete(fid); });
+      }
+      
+      // Check collisions for Player 2 (local co-op)
+      if (localCoopEnabled && player2Active && player2Player) {
+        activeFlows.forEach(checkScorePlayer2);
       }
 
       // Scores overlay (sorted by score desc): [flag] [name] [score] [-hits] (session + active filtering, grayed inactive)
@@ -2041,6 +2261,7 @@
       </div>
     {/if}
   </div>
+  
   <div style="margin-top: 12px;">
     <b>Game Layers ({numLayers}/{MAX_LAYERS})</b>
     {#if manualLayerCount !== null}
@@ -2276,6 +2497,57 @@
   </div>
 </div>
 
+<!-- Player 2 Mobile Controls (only show on touch devices when local coop is active) -->
+{#if localCoopEnabled && player2Active && navigator.maxTouchPoints > 0}
+<div style="position: absolute; bottom: 10px; right: 20px; z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px; opacity: 0.8;">
+  <div style="font-size: 12px; color: #fff; text-align: center; margin-bottom: 4px;">P2</div>
+  <!-- Up button -->
+  <button
+    aria-label="Player 2 Up"
+    aria-pressed={mobileP2UpPressed}
+    on:pointerdown={() => { mobileP2UpPressed = true; }}
+    on:pointerup={() => { mobileP2UpPressed = false; }}
+    on:pointerleave={() => { mobileP2UpPressed = false; }}
+    on:pointercancel={() => { mobileP2UpPressed = false; }}
+    style={`background:${mobileP2UpPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2UpPressed?'#aad':'#557'}; border-radius:8px; width:50px; height:50px; font-size:20px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2UpPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2UpPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+  ⬆️
+  </button>
+  <!-- Left, Down, Right buttons -->
+  <div style="display: flex; gap: 6px;">
+    <button
+      aria-label="Player 2 Left"
+      aria-pressed={mobileP2LeftPressed}
+      on:pointerdown={() => { mobileP2LeftPressed = true; }}
+      on:pointerup={() => { mobileP2LeftPressed = false; }}
+      on:pointerleave={() => { mobileP2LeftPressed = false; }}
+      on:pointercancel={() => { mobileP2LeftPressed = false; }}
+      style={`background:${mobileP2LeftPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2LeftPressed?'#aad':'#557'}; border-radius:8px; width:50px; height:50px; font-size:20px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2LeftPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2LeftPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+  ⬅️
+    </button>
+    <button
+      aria-label="Player 2 Down"
+      aria-pressed={mobileP2DownPressed}
+      on:pointerdown={() => { mobileP2DownPressed = true; }}
+      on:pointerup={() => { mobileP2DownPressed = false; }}
+      on:pointerleave={() => { mobileP2DownPressed = false; }}
+      on:pointercancel={() => { mobileP2DownPressed = false; }}
+      style={`background:${mobileP2DownPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2DownPressed?'#aad':'#557'}; border-radius:8px; width:50px; height:50px; font-size:20px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2DownPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2DownPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+  ⬇️
+    </button>
+    <button
+      aria-label="Player 2 Right"
+      aria-pressed={mobileP2RightPressed}
+      on:pointerdown={() => { mobileP2RightPressed = true; }}
+      on:pointerup={() => { mobileP2RightPressed = false; }}
+      on:pointerleave={() => { mobileP2RightPressed = false; }}
+      on:pointercancel={() => { mobileP2RightPressed = false; }}
+      style={`background:${mobileP2RightPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2RightPressed?'#aad':'#557'}; border-radius:8px; width:50px; height:50px; font-size:20px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2RightPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2RightPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+  ➡️
+    </button>
+  </div>
+</div>
+{/if}
+
 <style>
   :global(html, body) { margin: 0; background: #111; }
   canvas { max-width: 100vw; max-height: 100vh; object-fit: contain; }
@@ -2296,6 +2568,44 @@
     color: #fff;
   }
 </style>
+
+<!-- Local Co-op Panel (bottom-left, above highscores) -->
+<div style="position: absolute; bottom: {hsOpen ? '360px' : '60px'}; left: 10px; z-index: 9; transition: bottom 0.2s ease;">
+  {#if !localCoopEnabled}
+    <button 
+      on:click={startLocalCoop}
+      disabled={!localCoopSupported}
+      title={localCoopSupported ? 'PC: Använd numpad (8,4,6,2). Mobil: On-screen kontroller.' : 'Lokal flerspelarläge finns på kompatibla enheter'}
+      style="background: {localCoopSupported ? '#2d5016' : '#444'}; color: #fff; border: 1px solid {localCoopSupported ? '#4a7c26' : '#666'}; border-radius: 6px; padding: 8px 12px; cursor: {localCoopSupported ? 'pointer' : 'not-allowed'}; width: 320px; text-align: left; font-size: 14px; display: flex; align-items: center; gap: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
+      <span style="font-size: 18px;">🎮</span>
+      <span>Lokal Co-op (Spelare #2)</span>
+    </button>
+  {:else}
+    <div style="background: #1d3a1d; border: 1px solid #4a7c26; border-radius: 6px; padding: 10px 12px; width: 320px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="color: #fff; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 18px;">🎮</span>
+          <span>Spelare #2 Aktiv</span>
+        </span>
+        <button 
+          on:click={stopLocalCoop}
+          style="background: #663333; color: #fff; border: none; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 12px;">
+          Avsluta
+        </button>
+      </div>
+      <div style="color: #aaa; font-size: 12px;">
+        Layer: {player2Layer} | Speed Boost: +{player2SpeedBoost}%
+      </div>
+      <div style="color: #888; font-size: 11px; margin-top: 4px;">
+        {#if navigator.maxTouchPoints > 0}
+          Kontroller på höger sida
+        {:else}
+          Numpad: 8↑ 2↓ 4← 6→
+        {/if}
+      </div>
+    </div>
+  {/if}
+</div>
 
 <!-- Lifetime Highscores Panel (bottom-left) -->
 <div style="position: absolute; bottom: 10px; left: 10px; z-index: 9;">
