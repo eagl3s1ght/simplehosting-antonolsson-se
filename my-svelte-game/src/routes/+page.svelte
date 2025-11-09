@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, recordCatch, recordEvilHit, pruneOldFlows, fetchHighscores, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, auth, db, ROOM } from '$lib/firebase.js';
+  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, recordCatch, recordEvilHit, pruneOldFlows, fetchHighscores, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, cleanBotHighscores, auth, db, ROOM } from '$lib/firebase.js';
   import { ref, set, goOffline } from 'firebase/database';
   import { browser, dev } from '$app/environment';
 
@@ -2189,7 +2189,19 @@
       <select id="colorSelect" style="width: 100%; margin-top: 6px;"
         on:change={(e) => {
           const idx = parseInt(e.currentTarget.value);
-          if (!isNaN(idx)) { myColorIndex = idx; updateColor(myPlayer!.playerId, idx); }
+          if (!isNaN(idx)) { 
+            myColorIndex = idx; 
+            updateColor(myPlayer!.playerId, idx);
+            // Move player to new nest
+            const nestAngle = getNestAngle(idx);
+            myAngle = nestAngle;
+            updateAngle(myPlayer!.playerId, nestAngle);
+            // Move to outermost layer where nest is
+            myLayer = MAX_LAYERS - 1;
+            myLayerVisual = myLayer;
+            updateLayer(myPlayer!.playerId, myLayer);
+            console.log('[COLOR CHANGE] Moved to nest:', idx, 'angle:', (nestAngle * 180 / Math.PI).toFixed(2) + '°');
+          }
         }}>
         {#each PLAYER_COLORS as c, idx}
           {#key usedColors}
@@ -2323,6 +2335,14 @@
     console.log(`Removed ${result.removed} inactive players, archived ${result.archived} to highscores`);
   }}>
     Cleanup Inactive Players (5min)
+  </button>
+  <button style="margin-top: 8px; width: 100%; padding: 8px; background: #993333; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;" on:click={async () => {
+    console.log('🤖 Cleaning bot highscores...');
+    const removed = await cleanBotHighscores();
+    console.log(`Removed ${removed} bot highscores from database`);
+    alert(`Removed ${removed} bot highscores`);
+  }}>
+    Clean Bot Highscores
   </button>
   <button style="margin-top: 8px; width: 100%; padding: 8px; background: #336633; color: #fff; border: none; border-radius: 4px; cursor: pointer;" on:click={async () => {
     console.log('📊 Analyzing database size...');

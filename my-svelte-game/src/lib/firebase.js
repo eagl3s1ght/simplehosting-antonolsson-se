@@ -346,7 +346,16 @@ export async function removeLayer5Flows(batchLimit = 1000) {
   * @param {number} [colorIndex]
   * @param {string} [countryCode] two-letter ISO code
   */
-export function recordCatch(playerId, colorIndex, countryCode) {
+export async function recordCatch(playerId, colorIndex, countryCode) {
+  // Don't record highscores for bots or local co-op players
+  const playerRef = ref(db, `${ROOM}/players/${playerId}`);
+  const playerSnap = await get(playerRef);
+  const playerData = playerSnap.val();
+  
+  if (playerData?.isBot || playerData?.isLocalCoop) {
+    return; // Skip recording for bots and local co-op players
+  }
+  
   const hsRef = ref(db, `${ROOM}/highscores/${playerId}`);
   const now = Date.now();
   runTransaction(hsRef, (hs) => {
@@ -362,7 +371,16 @@ export function recordCatch(playerId, colorIndex, countryCode) {
 /** Increment lifetime evil-hit stats for a player.
  * @param {string} playerId
  */
-export function recordEvilHit(playerId) {
+export async function recordEvilHit(playerId) {
+  // Don't record highscores for bots or local co-op players
+  const playerRef = ref(db, `${ROOM}/players/${playerId}`);
+  const playerSnap = await get(playerRef);
+  const playerData = playerSnap.val();
+  
+  if (playerData?.isBot || playerData?.isLocalCoop) {
+    return; // Skip recording for bots and local co-op players
+  }
+  
   const hsRef = ref(db, `${ROOM}/highscores/${playerId}`);
   const now = Date.now();
   runTransaction(hsRef, (hs) => {
@@ -411,6 +429,52 @@ export async function pruneOldFlows(maxAgeMs = 60000, batchLimit = 500) {
     return removals.length;
   } catch (e) {
     console.warn('pruneOldFlows error', e);
+    return 0;
+  }
+}
+
+/** Clean bot highscores from the database
+ * @returns {Promise<number>} Number of bot highscores removed
+ */
+export async function cleanBotHighscores() {
+  try {
+    const playersSnap = await get(ref(db, `${ROOM}/players`));
+    const highscoresSnap = await get(ref(db, `${ROOM}/highscores`));
+    
+    if (!playersSnap.exists() || !highscoresSnap.exists()) return 0;
+    
+    const players = playersSnap.val();
+    const botPlayerIds = new Set();
+    
+    // Find all bot and local co-op player IDs
+    Object.entries(players).forEach(([playerId, playerData]) => {
+      if (playerData?.isBot || playerData?.isLocalCoop) {
+        botPlayerIds.add(playerId);
+      }
+    });
+    
+    // Also check for player IDs that start with 'bot-' or 'local-p2-'
+    Object.keys(highscoresSnap.val()).forEach((playerId) => {
+      if (playerId.startsWith('bot-') || playerId.startsWith('local-p2-')) {
+        botPlayerIds.add(playerId);
+      }
+    });
+    
+    // Remove bot highscores
+    const removals = [];
+    botPlayerIds.forEach((playerId) => {
+      removals.push(
+        remove(ref(db, `${ROOM}/highscores/${playerId}`))
+          .then(() => console.log(`[cleanBotHighscores] Removed bot highscore: ${playerId}`))
+          .catch(err => console.warn(`[cleanBotHighscores] Failed to remove ${playerId}:`, err))
+      );
+    });
+    
+    await Promise.all(removals);
+    console.log(`[cleanBotHighscores] Removed ${removals.length} bot highscores`);
+    return removals.length;
+  } catch (e) {
+    console.warn('[cleanBotHighscores] Error:', e);
     return 0;
   }
 }
