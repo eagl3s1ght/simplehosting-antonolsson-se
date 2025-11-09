@@ -140,6 +140,13 @@
   let stars: Star[] = [];
   const STAR_COUNT = 150;
   
+  // Custom context menu state
+  let showContextMenu = false;
+  let contextMenuX = 0;
+  let contextMenuY = 0;
+  let backgroundMusic: HTMLAudioElement | null = null;
+  let isMusicPlaying = false;
+  
   // Bot player state
   // Bot players
   let botPlayers: Map<string, { playerId: string; angle: number; layer: number; colorIndex: number | null; speedBoost: number; lastUpdateTime?: number; lastPresenceTime?: number }> = new Map();
@@ -320,6 +327,45 @@
     console.log('[PLAYER SPAWN - claimFreeColor] colorIndex:', chosen, 
                 'playerAngle:', (myAngle * 180 / Math.PI).toFixed(2) + '°',
                 'layer:', myLayer);
+  }
+  
+  // Context menu functions
+  function handleCanvasContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    contextMenuX = e.clientX;
+    contextMenuY = e.clientY;
+    showContextMenu = true;
+  }
+  
+  function closeContextMenu() {
+    showContextMenu = false;
+  }
+  
+  function becomeInactive() {
+    if (myPlayer?.playerId) {
+      try { 
+        setPlayerActive(myPlayer.playerId, false);
+        showInactiveDialog = true;
+      } catch (err) {
+        console.error('Failed to set inactive:', err);
+      }
+    }
+    closeContextMenu();
+  }
+  
+  function mailtoAuthor() {
+    window.location.href = 'mailto:eagleenterprises08+flowtogether@gmail.com';
+    closeContextMenu();
+  }
+  
+  function toggleBackgroundMusic() {
+    if (!backgroundMusic) {
+      // YouTube video ID: HuFYqnbVbzY
+      // Using a converted audio URL or iframe embed won't work directly
+      // Instead, we'll open it in a new tab for now
+      window.open('https://www.youtube.com/watch?v=HuFYqnbVbzY', '_blank');
+    }
+    closeContextMenu();
   }
 
   // Persist debug panel state in session storage
@@ -2118,7 +2164,13 @@
 
 <!-- Canvas Container with Scoreboard Overlay -->
 <div style="position: relative; display: inline-block; margin: 0 auto;">
-  <canvas id="gameCanvas" class="mx-auto block" width={CANVAS_SIZE} height={CANVAS_SIZE}></canvas>
+  <canvas 
+    id="gameCanvas" 
+    class="mx-auto block" 
+    width={CANVAS_SIZE} 
+    height={CANVAS_SIZE}
+    on:contextmenu={handleCanvasContextMenu}
+  ></canvas>
   
   <!-- Scoreboard Overlay (top-left of canvas) -->
   <div style="position: absolute; top: 0; left: 0; pointer-events: none; width: 100%; height: 100%;">
@@ -2283,3 +2335,86 @@
     {/if}
   </div>
 </div>
+
+<!-- Custom Context Menu -->
+{#if showContextMenu}
+  <div 
+    role="menu"
+    tabindex="-1"
+    style="
+      position: fixed;
+      left: {contextMenuX}px;
+      top: {contextMenuY}px;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      border-radius: 4px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      z-index: 10000;
+      min-width: 200px;
+      font-family: Arial, sans-serif;
+    "
+    on:click|stopPropagation
+    on:keydown|stopPropagation
+  >
+    <button
+      on:click={becomeInactive}
+      style="
+        display: block;
+        width: 100%;
+        padding: 10px 16px;
+        background: transparent;
+        border: none;
+        color: #fff;
+        text-align: left;
+        cursor: pointer;
+        font-size: 14px;
+      "
+      on:mouseenter={(e) => e.currentTarget.style.background = '#3a3a3a'}
+      on:mouseleave={(e) => e.currentTarget.style.background = 'transparent'}
+    >
+      Become Inactive
+    </button>
+    
+    <button
+      on:click={mailtoAuthor}
+      style="
+        display: block;
+        width: 100%;
+        padding: 10px 16px;
+        background: transparent;
+        border: none;
+        color: #fff;
+        text-align: left;
+        cursor: pointer;
+        font-size: 14px;
+        border-top: 1px solid #444;
+      "
+      on:mouseenter={(e) => e.currentTarget.style.background = '#3a3a3a'}
+      on:mouseleave={(e) => e.currentTarget.style.background = 'transparent'}
+    >
+      Contact Author
+    </button>
+    
+    <button
+      on:click={toggleBackgroundMusic}
+      style="
+        display: block;
+        width: 100%;
+        padding: 10px 16px;
+        background: transparent;
+        border: none;
+        color: #fff;
+        text-align: left;
+        cursor: pointer;
+        font-size: 14px;
+        border-top: 1px solid #444;
+      "
+      on:mouseenter={(e) => e.currentTarget.style.background = '#3a3a3a'}
+      on:mouseleave={(e) => e.currentTarget.style.background = 'transparent'}
+    >
+      Play Background Music
+    </button>
+  </div>
+{/if}
+
+<svelte:window on:click={closeContextMenu} />
