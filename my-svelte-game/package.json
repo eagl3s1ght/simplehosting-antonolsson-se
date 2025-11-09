@@ -52,6 +52,7 @@
 		"vitest-browser-svelte": "^2.0.1"
 	},
 	"dependencies": {
+		"@threlte/core": "^8.2.1",
 		"firebase": "^12.5.0",
 		"svelte-flag-icons": "^3.0.0",
 		"unique-names-generator": "^4.7.1"

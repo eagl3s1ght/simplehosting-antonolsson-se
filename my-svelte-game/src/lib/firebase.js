@@ -38,8 +38,9 @@ export const db = getDatabase(app);
 
 export const ROOM = 'publicGame';  // Single global room
 
-/** @param {(state:any)=>void} setState */
-export async function joinGame(setState) {
+/** @param {(state:any)=>void} setState 
+  * @param {{ angle?: number, layer?: number, colorIndex?: number }} [options={}] */
+export async function joinGame(setState, options = {}) {
   return signInAnonymously(auth).then((userCredential) => {
     const playerId = userCredential.user.uid;
     // Minimal player meta: keep only country, language, creationTime, lastSignInTime
@@ -56,10 +57,10 @@ export async function joinGame(setState) {
     } catch {}
     const playerData = {
       id: playerId,
-      angle: Math.random() * Math.PI * 2,  // Random start
+      angle: options.angle !== undefined ? options.angle : Math.random() * Math.PI * 2,
       score: 0,
-      layer: 0,  // Start at innermost layer
-      colorIndex: Math.floor(Math.random() * 12), // Tentative; UI will adjust to unused
+      layer: options.layer !== undefined ? options.layer : 0,
+      colorIndex: options.colorIndex !== undefined ? options.colorIndex : Math.floor(Math.random() * 12),
       createdAt: Date.now(), // Persist creation timestamp for visibility across clients
       active: true,
       meta
@@ -192,6 +193,38 @@ export function setLastSeen(playerId) {
     });
   } catch (e) {
     console.warn('setLastSeen error', e);
+  }
+}
+
+/** Set the player's session evil hits count (for current session only).
+ * @param {string} playerId
+ * @param {number} count
+ */
+export function setSessionEvilHits(playerId, count) {
+  if (!playerId) return;
+  try {
+    set(ref(db, `${ROOM}/players/${playerId}/evilHits`), count).catch(err => {
+      console.warn('Failed to set session evilHits:', err?.message || err);
+    });
+  } catch (e) {
+    console.warn('setSessionEvilHits error', e);
+  }
+}
+
+/** Increment the player's session evil hits count.
+ * @param {string} playerId
+ */
+export function incrementSessionEvilHits(playerId) {
+  if (!playerId) return;
+  try {
+    const playerRef = ref(db, `${ROOM}/players/${playerId}/evilHits`);
+    runTransaction(playerRef, (current) => {
+      return (current || 0) + 1;
+    }).catch(err => {
+      console.warn('Failed to increment session evilHits:', err?.message || err);
+    });
+  } catch (e) {
+    console.warn('incrementSessionEvilHits error', e);
   }
 }
 
@@ -431,4 +464,74 @@ export async function fetchHighscores(limit = 20) {
   // Reverse to descending by totalCatches
   list.sort((a, b) => (b.totalCatches || 0) - (a.totalCatches || 0));
   return list;
+}
+
+/**
+ * Clean up inactive players from the database (not seen in 5+ minutes).
+ * Before removing, ensures their stats are saved to highscores.
+ * @param {number} [inactiveThresholdMs=300000] Default 5 minutes
+ * @returns {Promise<{removed: number, archived: number}>}
+ */
+export async function cleanupInactivePlayers(inactiveThresholdMs = 300000) {
+  try {
+    const now = Date.now();
+    const playersRef = ref(db, `${ROOM}/players`);
+    const snap = await get(playersRef);
+    
+    if (!snap.exists()) {
+      return { removed: 0, archived: 0 };
+    }
+    
+    const toRemove = [];
+    const toArchive = [];
+    
+    snap.forEach((child) => {
+      const player = child.val();
+      const lastSeen = player?.lastSeen;
+      
+      // Only process players with lastSeen timestamp
+      if (typeof lastSeen === 'number') {
+        const timeSinceLastSeen = now - lastSeen;
+        
+        if (timeSinceLastSeen > inactiveThresholdMs) {
+          toRemove.push(child.key);
+          
+          // If player has any score or catches, archive to highscores
+          if (player.score > 0 || player.colorIndex != null) {
+            toArchive.push({
+              id: child.key,
+              score: player.score || 0,
+              colorIndex: player.colorIndex,
+              meta: player.meta
+            });
+          }
+        }
+      }
+    });
+    
+    // Archive to highscores first
+    for (const player of toArchive) {
+      const hsRef = ref(db, `${ROOM}/highscores/${player.id}`);
+      await runTransaction(hsRef, (hs) => {
+        hs = hs || { totalCatches: 0, evilHits: 0 };
+        // Don't overwrite existing stats, just ensure player exists in highscores
+        if (!hs.lastUpdated) {
+          hs.lastUpdated = now;
+        }
+        return hs;
+      });
+    }
+    
+    // Remove inactive players
+    for (const playerId of toRemove) {
+      await set(ref(db, `${ROOM}/players/${playerId}`), null);
+    }
+    
+    console.log(`[Cleanup] Removed ${toRemove.length} inactive players, archived ${toArchive.length} to highscores`);
+    return { removed: toRemove.length, archived: toArchive.length };
+    
+  } catch (e) {
+    console.error('cleanupInactivePlayers error:', e);
+    return { removed: 0, archived: 0 };
+  }
 }

@@ -26,7 +26,7 @@
   }
 
   // Types (lightweight to silence TS diagnostics)
-  type Player = { id: string; name: string; angle: number; score: number; layer?: number; colorIndex?: number; createdAt?: number; active?: boolean; lastSeen?: number; meta?: any; evilHits?: number };
+  type Player = { id: string; name: string; angle: number; score: number; layer?: number; colorIndex?: number; createdAt?: number; active?: boolean; lastSeen?: number; meta?: any; evilHits?: number; isBot?: boolean; createdBy?: string };
   type Flow = { key?: string; angle: number; spawnTime: number; scored?: boolean; isEvil?: boolean; layer?: number };
 
   // Download stats
@@ -130,9 +130,15 @@
   const COLLISION_RADIUS_TOLERANCE = 4;
   let debugSpeed = 0.005;
   let myAngle = 0;
-  let myLayer = 0; // Current layer (0-4)
+  let myLayer = 0; // Current layer (0-11) - target layer
+  let myLayerVisual = 0; // Visual layer position (smoothly interpolated)
   let myColorIndex: number | null = null;
   let mySpeedBoost = 0; // +1% per caught flow (additive)
+  
+  // Starfield background
+  type Star = { x: number; y: number; size: number; opacity: number; twinkleSpeed: number; twinklePhase: number };
+  let stars: Star[] = [];
+  const STAR_COUNT = 150;
   
   // Bot player state
   // Bot players
@@ -304,6 +310,7 @@
     updateAngle(myPlayer.playerId, nestAngle);
     // Set player to outermost layer (11) where nest is
     myLayer = MAX_LAYERS - 1;
+    myLayerVisual = myLayer; // Initialize visual layer to match
     updateLayer(myPlayer.playerId, myLayer);
     try { setPlayerActive(myPlayer.playerId, true); } catch {}
     try { setSessionEvilHits(myPlayer.playerId, 0); } catch {} // Reset session evil hits
@@ -757,7 +764,9 @@
       
       // Occasionally switch layers (random strategy)
       if (Math.random() < 0.005 && numLayers > 1) {
-        const newLayer = Math.floor(Math.random() * numLayers);
+        const minLayer = MAX_LAYERS - numLayers;
+        const maxLayer = MAX_LAYERS - 1;
+        const newLayer = minLayer + Math.floor(Math.random() * numLayers);
         botPlayer.layer = newLayer;
         updateLayer(botPlayer.playerId, newLayer);
       }
@@ -806,9 +815,13 @@
   }
 
   async function spawnBot() {
-    // Check if there are free slots
+    // Check if there are free slots (only count active players)
     const used = new Set<number>();
-    players.forEach(pl => { if (pl?.colorIndex != null) used.add(pl.colorIndex as number); });
+    players.forEach(pl => { 
+      if (pl?.colorIndex != null && isPlayerActiveNow(pl)) {
+        used.add(pl.colorIndex as number); 
+      }
+    });
     // Also include bot players in the used set
     botPlayers.forEach(bot => { if (bot.colorIndex != null) used.add(bot.colorIndex); });
     
@@ -849,6 +862,7 @@
         lastSeen: Date.now(),
         evilHits: 0,
         isBot: true,
+        createdBy: myPlayer?.playerId || null, // Track who created this bot
         meta: {
           country: null,
           language: null,
@@ -904,6 +918,19 @@
     ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
     canvas.width = CANVAS_SIZE;
     canvas.height = CANVAS_SIZE;
+    
+    // Initialize starfield
+    stars = [];
+    for (let i = 0; i < STAR_COUNT; i++) {
+      stars.push({
+        x: Math.random() * CANVAS_SIZE,
+        y: Math.random() * CANVAS_SIZE,
+        size: Math.random() * 1.5 + 0.5, // 0.5 to 2 pixels
+        opacity: Math.random() * 0.5 + 0.3, // 0.3 to 0.8
+        twinkleSpeed: Math.random() * 0.02 + 0.005, // Slow twinkle
+        twinklePhase: Math.random() * Math.PI * 2 // Random starting phase
+      });
+    }
 
   let unsubPlayers: () => void = () => {};
   let unsubFlows: () => void = () => {};
@@ -914,11 +941,13 @@
   if (myPlayer) {
     myColorIndex = (myPlayer.playerData as any).colorIndex ?? null;
     myLayer = (myPlayer.playerData as any).layer ?? 0;
+    myLayerVisual = myLayer; // Initialize visual layer to match
     
     // If player has a color, position them at their nest center (ignore old angle from DB)
     if (myColorIndex != null) {
       myAngle = getNestAngle(myColorIndex);
       myLayer = MAX_LAYERS - 1; // Ensure on outermost layer (11) where nests are
+      myLayerVisual = myLayer; // Update visual layer too
       // Update database with correct nest position
       updateAngle(myPlayer.playerId, myAngle);
       updateLayer(myPlayer.playerId, myLayer);
@@ -991,6 +1020,7 @@
                   updateAngle(myPlayer.playerId, nestAngle);
                   // Set player to outermost layer (11) where nest is
                   myLayer = MAX_LAYERS - 1;
+                  myLayerVisual = myLayer; // Initialize visual layer to match
                   updateLayer(myPlayer.playerId, myLayer);
                   try { setPlayerActive(myPlayer.playerId, true); } catch {}
                   try { setSessionEvilHits(myPlayer.playerId, 0); } catch {} // Reset session evil hits
@@ -1201,7 +1231,42 @@
       // Check if player is on a layer that no longer exists and move them to nearest valid layer
       if (myPlayer && myLayer < minAllowedLayer) {
         myLayer = minAllowedLayer;
+        myLayerVisual = myLayer; // Snap visual layer immediately when forced to move
         updateLayer(myPlayer.playerId, myLayer);
+      }
+      
+      // Check if bots are on layers that no longer exist and move them to nearest valid layer
+      botPlayers.forEach((bot) => {
+        if (bot.layer < minAllowedLayer) {
+          bot.layer = minAllowedLayer;
+          updateLayer(bot.playerId, minAllowedLayer);
+        }
+      });
+      
+      // Cleanup bots whose creator is no longer active
+      const activePlayerIds = new Set(
+        players
+          .filter(pl => pl && isPlayerActiveNow(pl))
+          .map(pl => pl.id)
+      );
+      
+      // Remove bots whose creator is not active
+      const botsToRemove: string[] = [];
+      players.forEach(pl => {
+        if (pl?.isBot && pl.createdBy && !activePlayerIds.has(pl.createdBy)) {
+          botsToRemove.push(pl.id);
+        }
+      });
+      
+      // Delete bots from database
+      if (botsToRemove.length > 0) {
+        botsToRemove.forEach(botId => {
+          try {
+            set(ref(db, `${ROOM}/players/${botId}`), null);
+          } catch (err) {
+            console.warn('Failed to remove bot', botId, err);
+          }
+        });
       }
       
       // Update pause state from current players
@@ -1274,6 +1339,14 @@
             if (myPlayer?.playerId) updateLayer(myPlayer.playerId, myLayer);
           }
         }
+        
+        // Smooth layer transition - interpolate visual layer towards target layer
+        const layerTransitionSpeed = 0.15; // Higher = faster transition (0-1)
+        myLayerVisual += (myLayer - myLayerVisual) * layerTransitionSpeed;
+        // Snap to target when very close to avoid floating point drift
+        if (Math.abs(myLayer - myLayerVisual) < 0.01) {
+          myLayerVisual = myLayer;
+        }
 
       // Update bot AI (for all active bots)
       if (botPlayers.size > 0) {
@@ -1283,6 +1356,14 @@
       // Clear
       ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw starfield background with twinkling effect
+      stars.forEach(star => {
+        star.twinklePhase += star.twinkleSpeed;
+        const twinkle = Math.sin(star.twinklePhase) * 0.3 + 0.7; // Oscillate between 0.4 and 1.0
+        ctx.fillStyle = `rgba(255, 255, 255, ${star.opacity * twinkle})`;
+        ctx.fillRect(star.x, star.y, star.size, star.size);
+      });
 
       // Center circle
       ctx.fillStyle = '#ff0';
@@ -1349,32 +1430,31 @@
           // Calculate nest position to fill entire circle with no gaps
           const nestStartAngle = (idx * nestAngularWidth) - (Math.PI * 2 / 4); // Start from top, rotate -90°
           const nestEndAngle = nestStartAngle + nestAngularWidth;
-          const nestCenterAngle = (nestStartAngle + nestEndAngle) / 2;
           
           // Check if this color is active
           const isActive = activeUsedColorsAll.has(idx);
           
-          // Draw main nest arc with low opacity (0.2) - use white color
+          // Draw main nest arc with low opacity (0.2) - nest background
           ctx.globalAlpha = 0.2;
-          ctx.strokeStyle = '#ffffff';
+          ctx.strokeStyle = colorData.hex;
           ctx.lineWidth = 25;
           ctx.lineCap = 'butt'; // Square caps so nests connect seamlessly
           ctx.beginPath();
           ctx.arc(CENTER_X, CENTER_Y, outermostRadius, nestStartAngle, nestEndAngle);
           ctx.stroke();
-          ctx.globalAlpha = 1.0; // Reset opacity
           
-          // Draw bright outer border if active (this is the collision detector at 0.8 opacity)
+          // Draw collision border at 0.8 opacity if active (outer edge)
           if (isActive) {
             ctx.globalAlpha = 0.8;
-            ctx.strokeStyle = '#ffffff';
+            ctx.strokeStyle = colorData.hex;
             ctx.lineWidth = 4;
             ctx.lineCap = 'butt';
             ctx.beginPath();
-            ctx.arc(CENTER_X, CENTER_Y, outermostRadius + 12.5, nestStartAngle, nestEndAngle); // Outer edge
+            ctx.arc(CENTER_X, CENTER_Y, outermostRadius + 12.5, nestStartAngle, nestEndAngle);
             ctx.stroke();
-            ctx.globalAlpha = 1.0; // Reset opacity
           }
+          
+          ctx.globalAlpha = 1.0; // Reset opacity
         });
       }
 
@@ -1402,7 +1482,8 @@
   const color = (cIndex != null && PLAYER_COLORS[cIndex]) ? PLAYER_COLORS[cIndex].hex : '#888';
         
   // Get player's layer and corresponding radius
-  const playerLayer = isMyPlayer ? myLayer : (p.layer ?? 0);
+  // For the current player, use smooth visual layer; for others use their actual layer
+  const playerLayer = isMyPlayer ? myLayerVisual : (p.layer ?? 0);
     // Use fixed layer spacing - layers are numbered 0-11, where 11 is outermost
     const layerRadius = INNER_R + FIXED_LAYER_SPACING * (playerLayer + 1);
         
@@ -1455,8 +1536,7 @@
   const overshootPx = 240; // keep flows until further past canvas edge (doubled)
       flowCache.forEach((flow, id) => {
         if (flowsToRemove.has(id)) return; // collided -> skip
-        const age = Math.max(0, (now - flow.spawnTime) - pauseAccumulatedMs);
-        const progress = (age / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+        const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
   const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
   // If flow exits beyond the canvas (outside render radius), tag it as layer 5 once
   if (flow.layer !== 5 && flowRadius > MAX_FLOW_RADIUS) {
@@ -1482,7 +1562,7 @@
       });
       
       activeFlows.forEach(flow => {
-        const rawProgress = (Math.max(0, (now - flow.spawnTime) - pauseAccumulatedMs) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+        const rawProgress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
         const r = INNER_R + rawProgress * (MAX_FLOW_RADIUS - INNER_R);
         const headX = CENTER_X + Math.cos(flow.angle) * r;
         const headY = CENTER_Y + Math.sin(flow.angle) * r;
