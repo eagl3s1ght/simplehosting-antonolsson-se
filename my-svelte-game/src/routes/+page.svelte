@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, recordCatch, recordEvilHit, pruneOldFlows, fetchHighscores, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, auth, db, ROOM } from '$lib/firebase.js';
+  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, recordCatch, recordEvilHit, pruneOldFlows, fetchHighscores, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, auth, db, ROOM } from '$lib/firebase.js';
   import { ref, set, goOffline } from 'firebase/database';
   import { browser, dev } from '$app/environment';
 
@@ -26,7 +26,7 @@
   }
 
   // Types (lightweight to silence TS diagnostics)
-  type Player = { id: string; name: string; angle: number; score: number; layer?: number; colorIndex?: number; createdAt?: number; active?: boolean; lastSeen?: number; meta?: any };
+  type Player = { id: string; name: string; angle: number; score: number; layer?: number; colorIndex?: number; createdAt?: number; active?: boolean; lastSeen?: number; meta?: any; evilHits?: number };
   type Flow = { key?: string; angle: number; spawnTime: number; scored?: boolean; isEvil?: boolean; layer?: number };
 
   // Download stats
@@ -75,20 +75,45 @@
   let keys: Record<string, boolean> = {};
   const PIPE_WIDTH = 0.4;
   
-  // Layer system - 5 concentric circles
-  const NUM_LAYERS = 5;
+  // Layer system - dynamic layers (1 per active player, max 12)
+  const MAX_LAYERS = 12;
   const INNER_R = 60;
   const OUTER_R = 380;
-  const LAYER_SPACING = (OUTER_R - INNER_R) / NUM_LAYERS;
-  const LAYER_RADII = Array.from({ length: NUM_LAYERS }, (_, i) => INNER_R + LAYER_SPACING * (i + 1));
-  // Layer colors: lighter gray near sun, darker gray far from sun
-  const LAYER_COLORS = [
-    '#6b6b6b', // Layer 0 (innermost) - lightest gray
-    '#5a5a5a', // Layer 1
-    '#494949', // Layer 2
-    '#383838', // Layer 3
-    '#272727'  // Layer 4 (outermost) - darkest gray
-  ];
+  const TOTAL_LAYER_AREA = OUTER_R - INNER_R;
+  // Fixed spacing as if all MAX_LAYERS exist - this keeps players at consistent positions
+  const FIXED_LAYER_SPACING = TOTAL_LAYER_AREA / MAX_LAYERS;
+  
+  // Manual layer override for debug purposes (null = auto based on active players)
+  let manualLayerCount: number | null = null;
+  
+  // Reactive: number of layers = number of active players (capped at 12), or manual override
+  // Layers are numbered from outside-in: layer 11 = outermost (where nests are), layer 0 = innermost (closest to sun)
+  $: numLayers = manualLayerCount !== null 
+    ? Math.min(MAX_LAYERS, Math.max(1, manualLayerCount))
+    : Math.min(MAX_LAYERS, Math.max(1, activeUsedColorsAll.size));
+  $: layerSpacing = TOTAL_LAYER_AREA / numLayers;
+  $: layerRadii = Array.from({ length: numLayers }, (_, i) => INNER_R + layerSpacing * (i + 1));
+  
+  // Generate layer colors - fixed colors for each absolute layer index (0-11)
+  // Layer 0 (innermost, closest to sun): brightest gray
+  // Layer 11 (outermost, in space): darkest gray
+  function getLayerColor(layerIndex: number): string {
+    const innerRGB = 58;   // #3A3A3A - brighter (near sun, layer 0)
+    const outerRGB = 26;   // #1A1A1A - darker (outer space, layer 11)
+    
+    // t goes from 0 (layer 0, innermost) to 1 (layer 11, outermost)
+    const t = layerIndex / (MAX_LAYERS - 1);
+    // Interpolate: start bright (inner) and go darker (outer)
+    const gray = Math.round(innerRGB - t * (innerRGB - outerRGB));
+    const hex = gray.toString(16).padStart(2, '0');
+    return `#${hex}${hex}${hex}`;
+  }
+  
+  // Generate colors for currently visible layers
+  $: layerColors = Array.from({ length: numLayers }, (_, i) => {
+    const layerIndex = (MAX_LAYERS - numLayers) + i;
+    return getLayerColor(layerIndex);
+  });
   
   const CANVAS_SIZE = (OUTER_R + 30) * 2; // Add 30px padding
   const CENTER_X = CANVAS_SIZE / 2;
@@ -107,22 +132,51 @@
   let myAngle = 0;
   let myLayer = 0; // Current layer (0-4)
   let myColorIndex: number | null = null;
+  let mySpeedBoost = 0; // +1% per caught flow (additive)
+  
+  // Bot player state
+  // Bot players
+  let botPlayers: Map<string, { playerId: string; angle: number; layer: number; colorIndex: number | null; speedBoost: number; lastUpdateTime?: number; lastPresenceTime?: number }> = new Map();
+  let botActive = false;
+  
   // Debug panel state (only used in dev builds)
   let debugOpen = dev ? false : undefined as any;
+  // Lifetime highscores panel toggle (similar to debug panel toggle); default hidden
+  let hsOpen = false;
   // Highscores state
   type Highscore = { id:string; totalCatches?:number; evilHits?:number; name?:string; colorIndex?:number; country?: string; lastUpdated?:number };
   let highscores: Highscore[] = [];
   let hsLastLoaded = 0; // timestamp
   const HS_RELOAD_COOLDOWN = 5 * 60 * 1000; // 5 minutes
-  let FlagComp: any = null;
+  let flagIcons: any = null; // Will hold all flag components
   let uniqGen: any = null; let dictAdj: any = null; let dictAnimals: any = null;
+
+  // Scoreboard data for HTML overlay (with flags)
+  type ScoreboardEntry = { id: string; name: string; score: number; hits: number; country: string | null; color: string; active: boolean; };
+  let scoreboardList: ScoreboardEntry[] = [];
+  
+  // Nest render logging flag (log only once)
+  let nestRenderLogged = false;
 
   // Idle timer state
   const IDLE_TIMEOUT_MS = 60_000; // 1 minute
   let idleEnabled = true; // debug toggle; when false, idle never triggers (will be loaded from storage)
+  // When true, we mark player inactive and stop the game when the window/tab becomes inactive (blur/hidden)
+  // This should be user-toggleable via the debug menu and persist across browser sessions.
+  let markInactiveOnWindowInactive = true;
+  // Auto-spawn bot on join (persisted)
+  let autoSpawnBotOnJoin = false;
   let isIdle = false; // set to true once we go idle and stop DB activity
   let lastMovementTime = Date.now();
   let idleRemainingMs = IDLE_TIMEOUT_MS;
+
+  // FPS tracking
+  let lastFrameTime = Date.now();
+  let frameCount = 0;
+  let lastFpsUpdateTime = Date.now();
+  let currentFps = 60;
+  let fpsHistory: number[] = [];
+  let averageFps = 60;
   let uiNow = Date.now();
   let uiTickInterval: any;
   // Browser activity (focus/visibility) tracking
@@ -132,31 +186,48 @@
 
   // Fixed palette with animal-themed names
   const PLAYER_COLORS = [
-  { name: 'Night Violet', hex: '#5E35B1' },       // Deep Purple
-  { name: 'Mystic Purple', hex: '#7E57C2' },      // Medium Purple
-  { name: 'Indigo', hex: '#3949AB' },             // Indigo Blue
-  { name: 'Sky Blue', hex: '#1E88E5' },           // Bright Blue
-  { name: 'Teal', hex: '#00897B' },               // Teal
-  { name: 'Forest Green', hex: '#43A047' },       // Forest Green
-  { name: 'Lime Green', hex: '#7CB342' },         // Lime Green
-  { name: 'Meadow', hex: '#D4E157' },             // Yellow-Green
-  { name: 'Golden Yellow', hex: '#FFCA28' },      // Golden Yellow
-  { name: 'Solar Orange', hex: '#FB8C00' },       // Orange
-  { name: 'Ember Orange', hex: '#E64A19' },       // Red-Orange
-  { name: 'Crimson Red', hex: '#D32F2F' }         // Red
+  { name: 'Night Violet', hex: '#5E35B1', startAngle: (210 * Math.PI) / 180 },       // Deep Purple - 210°
+  { name: 'Mystic Purple', hex: '#7E57C2', startAngle: (240 * Math.PI) / 180 },      // Medium Purple - 240°
+  { name: 'Indigo', hex: '#3949AB', startAngle: (270 * Math.PI) / 180 },             // Indigo Blue - 270°
+  { name: 'Sky Blue', hex: '#1E88E5', startAngle: (300 * Math.PI) / 180 },           // Bright Blue - 300°
+  { name: 'Teal', hex: '#00897B', startAngle: (330 * Math.PI) / 180 },               // Teal - 330°
+  { name: 'Forest Green', hex: '#43A047', startAngle: 0 },                            // Forest Green - 0°
+  { name: 'Lime Green', hex: '#7CB342', startAngle: (30 * Math.PI) / 180 },          // Lime Green - 30°
+  { name: 'Meadow', hex: '#D4E157', startAngle: (60 * Math.PI) / 180 },              // Yellow-Green - 60°
+  { name: 'Golden Yellow', hex: '#FFCA28', startAngle: (90 * Math.PI) / 180 },       // Golden Yellow - 90°
+  { name: 'Solar Orange', hex: '#FB8C00', startAngle: (120 * Math.PI) / 180 },       // Orange - 120°
+  { name: 'Ember Orange', hex: '#E64A19', startAngle: (150 * Math.PI) / 180 },       // Red-Orange - 150°
+  { name: 'Crimson Red', hex: '#D32F2F', startAngle: (180 * Math.PI) / 180 }         // Red - 180°
   ];
 
   // Reactive: compute used colors by other players
+  function isPlayerActiveNow(pl: any, nowTs: number = Date.now()): boolean {
+    if (!pl) return false;
+    const activeFlag = pl.active !== false;
+    const ls = pl.lastSeen;
+    const fresh = typeof ls === 'number' ? (nowTs - ls) < 30000 : true;
+    return activeFlag && fresh;
+  }
+  // Only consider ACTIVE players when marking colors as taken (exclude my own to allow switching)
   $: usedColors = new Set<number>(
-    players.filter(pl => pl && (!myPlayer || pl.id !== myPlayer.playerId) && pl.colorIndex != null).map(pl => pl.colorIndex as number)
+    players
+      .filter(pl => pl && (!myPlayer || pl.id !== myPlayer.playerId) && pl.colorIndex != null && isPlayerActiveNow(pl))
+      .map(pl => pl.colorIndex as number)
+  );
+  // Active-used colors including me (for display of total taken slots)
+  $: activeUsedColorsAll = new Set<number>(
+    players
+      .filter(pl => pl && pl.colorIndex != null && isPlayerActiveNow(pl))
+      .map(pl => pl.colorIndex as number)
   );
 
-  // Map color index -> array of players who use it (including me)
+  // Map color index -> array of ACTIVE players who use it (including me if active)
   $: colorOwners = (() => {
     const m = new Map<number, Player[]>();
     for (const pl of players) {
       const idx = pl?.colorIndex;
       if (idx == null) continue;
+      if (!isPlayerActiveNow(pl)) continue;
       const arr = m.get(idx) ?? [];
       arr.push(pl);
       m.set(idx, arr);
@@ -185,10 +256,27 @@
     return String.fromCodePoint(base + a) + String.fromCodePoint(base + b);
   }
 
+  // Get flag component for country code (e.g., "SE" -> Se component)
+  function getFlagComponent(cc: string | null | undefined): any {
+    if (!flagIcons || !cc || cc.length !== 2) return null;
+    // Convert country code to component name (e.g., "SE" -> "Se", "US" -> "Us")
+    const componentName = cc.charAt(0).toUpperCase() + cc.charAt(1).toLowerCase();
+    return flagIcons[componentName] || null;
+  }
+
   function colorForPlayer(p: Player): string {
     const idx = (myPlayer && p.id === myPlayer.playerId) ? (myColorIndex ?? p.colorIndex) : p.colorIndex;
     if (idx != null && PLAYER_COLORS[idx]) return PLAYER_COLORS[idx].hex;
     return '#888';
+  }
+
+  // Calculate the center angle of a nest (where player should spawn)
+  function getNestAngle(colorIndex: number): number {
+    const nestAngularWidth = (Math.PI * 2) / PLAYER_COLORS.length;
+    const nestStartAngle = (colorIndex * nestAngularWidth) - (Math.PI * 2 / 4);
+    const centerAngle = nestStartAngle + nestAngularWidth / 2;
+    const normalized = normalizeAngle(centerAngle);
+    return normalized;
   }
 
   // Queue state for players when all colors are taken
@@ -210,11 +298,21 @@
     if (chosen == null) return;
     myColorIndex = chosen;
     updateColor(myPlayer.playerId, chosen);
+    // Set starting angle at nest center (where player should spawn)
+    const nestAngle = getNestAngle(chosen);
+    myAngle = nestAngle;
+    updateAngle(myPlayer.playerId, nestAngle);
+    // Set player to outermost layer (11) where nest is
+    myLayer = MAX_LAYERS - 1;
+    updateLayer(myPlayer.playerId, myLayer);
     try { setPlayerActive(myPlayer.playerId, true); } catch {}
+    try { setSessionEvilHits(myPlayer.playerId, 0); } catch {} // Reset session evil hits
     try { set(ref(db, `${ROOM}/players/${myPlayer.playerId}/queued`), null); } catch {}
     isQueued = false;
     canClaimSpot = false;
-    console.log('[Queue] Claimed color spot', chosen);
+    console.log('[PLAYER SPAWN - claimFreeColor] colorIndex:', chosen, 
+                'playerAngle:', (myAngle * 180 / Math.PI).toFixed(2) + '°',
+                'layer:', myLayer);
   }
 
   // Persist debug panel state in session storage
@@ -224,6 +322,8 @@
         const saved = sessionStorage.getItem('debugOpen');
         if (saved === '1') debugOpen = true; // restore open state
       }
+  const hsToggle = sessionStorage.getItem('hsOpen');
+  if (hsToggle === '1') hsOpen = true;
       const hsSaved = sessionStorage.getItem('hsLastLoaded');
       if (hsSaved) hsLastLoaded = parseInt(hsSaved) || 0;
       const idleSaved = localStorage.getItem('idleEnabled');
@@ -231,11 +331,21 @@
         idleEnabled = idleSaved === '1';
         console.log('[Idle] Loaded setting from storage:', idleEnabled);
       }
+      const blurSaved = localStorage.getItem('markInactiveOnWindowInactive');
+      if (blurSaved !== null) {
+        markInactiveOnWindowInactive = blurSaved === '1';
+        console.log('[Blur/Hidden] Loaded setting from storage:', markInactiveOnWindowInactive);
+      }
+      const autoSpawnBotSaved = localStorage.getItem('autoSpawnBotOnJoin');
+      if (autoSpawnBotSaved !== null) {
+        autoSpawnBotOnJoin = autoSpawnBotSaved === '1';
+        console.log('[Bot] Auto-spawn on join loaded from storage:', autoSpawnBotOnJoin);
+      }
       storageLoaded = true;
     }
     // Try to load external libs dynamically (non-blocking)
     import('unique-names-generator').then((m) => { uniqGen = m.uniqueNamesGenerator; dictAdj = m.adjectives; dictAnimals = m.animals; }).catch(() => {});
-    import('svelte-flag-icons').then((m) => { FlagComp = (m as any).Flag || (m as any).default || null; }).catch(() => {});
+    import('svelte-flag-icons').then((m) => { flagIcons = m; }).catch(() => {});
     // Load highscores once on page load
     loadHighscoresOnce();
 
@@ -258,8 +368,10 @@
     };
     const onBlur = () => { 
       windowActive = false;
+      // Clear all pressed keys when window loses focus
+      keys = {};
       // Mark player inactive and disconnect when window loses focus
-      if (myPlayer?.playerId) {
+      if (markInactiveOnWindowInactive && myPlayer?.playerId) {
         try { setPlayerActive(myPlayer.playerId, false); } catch {}
         if (stopGameFn) stopGameFn(); // Stop render loop and intervals
         console.log('[Window] Lost focus, marked inactive and stopped game');
@@ -270,8 +382,12 @@
     const onVisibility = () => {
       hidden = document.hidden;
       windowActive = !hidden && document.hasFocus();
+      // Clear all pressed keys when tab becomes hidden
+      if (hidden) {
+        keys = {};
+      }
       // Also disconnect when tab becomes hidden
-      if (hidden && myPlayer?.playerId) {
+      if (hidden && markInactiveOnWindowInactive && myPlayer?.playerId) {
         try { setPlayerActive(myPlayer.playerId, false); } catch {}
         if (stopGameFn) stopGameFn(); // Stop render loop and intervals
         console.log('[Window] Tab hidden, marked inactive and stopped game');
@@ -287,10 +403,17 @@
     };
   });
   $: if (dev && browser) sessionStorage.setItem('debugOpen', debugOpen ? '1' : '0');
+  $: if (browser) sessionStorage.setItem('hsOpen', hsOpen ? '1' : '0');
   $: if (browser) sessionStorage.setItem('hsLastLoaded', String(hsLastLoaded));
   $: if (browser && storageLoaded) {
     localStorage.setItem('idleEnabled', idleEnabled ? '1' : '0');
-    if (dev) console.log('[Idle] Saved setting to storage:', idleEnabled);
+    localStorage.setItem('markInactiveOnWindowInactive', markInactiveOnWindowInactive ? '1' : '0');
+    localStorage.setItem('autoSpawnBotOnJoin', autoSpawnBotOnJoin ? '1' : '0');
+    if (dev) {
+      console.log('[Idle] Saved setting to storage:', idleEnabled);
+      console.log('[Blur/Hidden] Saved setting to storage:', markInactiveOnWindowInactive);
+      console.log('[Bot] Auto-spawn on join saved to storage:', autoSpawnBotOnJoin);
+    }
   }
   const toggleDebug = dev ? () => { debugOpen = !debugOpen; } : () => {};
   function hashUid(uid: string | undefined | null) {
@@ -342,7 +465,7 @@
 
   async function loadHighscoresOnce() {
     try {
-      const list = await fetchHighscores(20);
+      const list = await fetchHighscores(100);
       highscores = list;
       hsLastLoaded = Date.now();
     } catch (e) {
@@ -368,6 +491,8 @@
   let gameStartTime = 0;
   let gameSessionStartTime = 0;         // sessions gate scoreboard membership
   let pauseForNoPlayers = false;        // true when no active players
+  // Track last known angles to detect inactive players on difficulty changes
+  const lastKnownAngles = new Map<string, number>();
 
   // Hurt animation state
   let hurtUntil = 0; // Timestamp when hurt animation ends
@@ -455,6 +580,73 @@
     }
   }
   
+  function checkNestCollisions(flow: Flow) {
+    // Check if any active player's nest (in outermost layer) catches this flow
+    const flowId = `${flow.spawnTime}_${flow.angle.toFixed(4)}`;
+    if (scoredFlows.has(flowId) || flowsToRemove.has(flowId)) return;
+    
+    const now = Date.now();
+    const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+    const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
+    
+    // Nest collision detector is at the outer border (outermostRadius + 12.5)
+    const outermostRadius = layerRadii[numLayers - 1];
+    const nestBorderRadius = outermostRadius + 12.5; // Where the bright border is drawn
+    const R_WINDOW = COLLISION_RADIUS_TOLERANCE;
+    
+    // Check if flow is at the nest border radius (the collision detector)
+    if (flowRadius >= (nestBorderRadius - R_WINDOW) && flowRadius <= (nestBorderRadius + R_WINDOW)) {
+      const nestAngularWidth = (Math.PI * 2) / PLAYER_COLORS.length;
+      
+      // Check each color's nest
+      PLAYER_COLORS.forEach((colorData, idx) => {
+        // Only check nests for active players
+        if (!activeUsedColorsAll.has(idx)) return;
+        
+        // Calculate nest angular range (same as rendering)
+        const nestStartAngle = (idx * nestAngularWidth) - (Math.PI * 2 / 4);
+        const nestEndAngle = nestStartAngle + nestAngularWidth;
+        
+        // Normalize angles
+        const normFlowAngle = normalizeAngle(flow.angle);
+        const normStart = normalizeAngle(nestStartAngle);
+        const normEnd = normalizeAngle(nestEndAngle);
+        
+        // Check if flow angle falls within nest range
+        let isInNest = false;
+        if (normStart <= normEnd) {
+          isInNest = normFlowAngle >= normStart && normFlowAngle <= normEnd;
+        } else {
+          // Handle wrap-around case
+          isInNest = normFlowAngle >= normStart || normFlowAngle <= normEnd;
+        }
+        
+        if (isInNest) {
+          // Find the player(s) with this color
+          const owners = colorOwners.get(idx);
+          if (!owners || owners.length === 0) return;
+          
+          // Award points to all players of this color
+          owners.forEach(owner => {
+            scoredFlows.add(flowId);
+            flowsToRemove.add(flowId);
+            
+            if (flow.isEvil) {
+              decrementScore(owner.id);
+              recordEvilHit(owner.id); // Lifetime stats
+              incrementSessionEvilHits(owner.id); // Session stats
+              console.debug('Nest caught evil flow!', { colorIndex: idx, playerId: owner.id });
+            } else {
+              incrementScore(owner.id);
+              recordCatch(owner.id, idx);
+              console.debug('Nest caught flow!', { colorIndex: idx, playerId: owner.id });
+            }
+          });
+        }
+      });
+    }
+  }
+  
   function checkScore(flow: Flow) {
     if (!myPlayer) return;
     
@@ -468,9 +660,8 @@
   const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
     const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
 
-    // Determine target layer and radius for this player
-    const targetLayer = Math.max(0, Math.min(NUM_LAYERS - 1, myLayer));
-    const targetRadius = LAYER_RADII[targetLayer];
+    // Determine target radius for this player using fixed layer position
+    const targetRadius = INNER_R + FIXED_LAYER_SPACING * (myLayer + 1);
 
   // Ignore any stored flow.layer for collision; flows can be caught on whichever layer the player is on
 
@@ -484,17 +675,19 @@
         if (flow.isEvil) {
           // Evil flow reduces score and triggers hurt animation
           decrementScore(myPlayer.playerId);
-          recordEvilHit(myPlayer.playerId);
+          recordEvilHit(myPlayer.playerId); // Lifetime stats
+          incrementSessionEvilHits(myPlayer.playerId); // Session stats
           hurtUntil = now + 400; // Blink for 400ms (2 blinks at ~200ms each)
           console.debug('HIT BY EVIL FLOW! Score reduced', {
             flowId,
             flowAngle: flow.angle,
             playerAngle: myAngle,
-            layer: targetLayer
+            layer: myLayer
           });
         } else {
-          // Normal flow increases score
+          // Normal flow increases score AND speed boost
           incrementScore(myPlayer.playerId);
+          mySpeedBoost++; // +1% additive per catch
           // Update lifetime highscore (catches)
           recordCatch(
             myPlayer.playerId,
@@ -506,10 +699,202 @@
             flowAngle: flow.angle,
             playerAngle: myAngle,
             progress: progress.toFixed(3),
-            layer: targetLayer
+            layer: myLayer,
+            speedBoost: mySpeedBoost
           });
         }
       }
+    }
+  }
+
+  // Bot AI logic (handles all active bots)
+  function updateBotAI(now: number) {
+    if (botPlayers.size === 0) return;
+    
+    botPlayers.forEach((botPlayer) => {
+      // Simple AI: find nearest flow on bot's current layer
+      const botLayerRadius = INNER_R + FIXED_LAYER_SPACING * (botPlayer.layer + 1);
+      const R_WINDOW = COLLISION_RADIUS_TOLERANCE + 20; // Look ahead window
+      
+      let targetFlow: Flow | null = null;
+      let minAngleDist = Infinity;
+      
+      flowCache.forEach((flow) => {
+        const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+        const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
+        
+        // Check if flow is approaching bot's layer
+        if (Math.abs(flowRadius - botLayerRadius) < R_WINDOW) {
+          const angleDist = Math.abs(normalizeAngle(flow.angle - botPlayer.angle));
+          const shortDist = Math.min(angleDist, Math.PI * 2 - angleDist);
+          
+          // Prioritize normal flows, avoid evil flows
+          if (flow.isEvil) {
+            // Avoid evil flows by moving away
+            if (shortDist < 0.5) {
+              // Move perpendicular to evil flow
+              const avoidDir = shortDist < Math.PI ? -1 : 1;
+              botPlayer.angle = normalizeAngle(botPlayer.angle + avoidDir * 0.01);
+            }
+          } else if (shortDist < minAngleDist) {
+            minAngleDist = shortDist;
+            targetFlow = flow;
+          }
+        }
+      });
+      
+      // Move toward target normal flow
+      if (targetFlow) {
+        const targetAngle = targetFlow.angle;
+        const diff = normalizeAngle(targetAngle - botPlayer.angle);
+        const turnSpeed = 0.008 * (1 + botPlayer.speedBoost * 0.01);
+        if (diff > 0.01 && diff < Math.PI) {
+          botPlayer.angle = normalizeAngle(botPlayer.angle + turnSpeed);
+        } else if (diff < -0.01 || diff > Math.PI) {
+          botPlayer.angle = normalizeAngle(botPlayer.angle - turnSpeed);
+        }
+      }
+      
+      // Occasionally switch layers (random strategy)
+      if (Math.random() < 0.005 && numLayers > 1) {
+        const newLayer = Math.floor(Math.random() * numLayers);
+        botPlayer.layer = newLayer;
+        updateLayer(botPlayer.playerId, newLayer);
+      }
+      
+      // Throttled Firebase updates (100ms for angle, 3s for presence)
+      if (!botPlayer.lastUpdateTime) botPlayer.lastUpdateTime = 0;
+      if (!botPlayer.lastPresenceTime) botPlayer.lastPresenceTime = 0;
+      
+      if (now - botPlayer.lastUpdateTime > 100) {
+        updateAngle(botPlayer.playerId, botPlayer.angle);
+        botPlayer.lastUpdateTime = now;
+      }
+      
+      if (now - botPlayer.lastPresenceTime > 3000) {
+        setLastSeen(botPlayer.playerId);
+        botPlayer.lastPresenceTime = now;
+      }
+      
+      // Check bot collisions
+      flowCache.forEach((flow) => {
+        const flowId = `${flow.spawnTime}_${flow.angle.toFixed(4)}`;
+        if (scoredFlows.has(flowId) || flowsToRemove.has(flowId)) return;
+        
+        const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+        const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
+        const targetRadius = INNER_R + FIXED_LAYER_SPACING * (botPlayer.layer + 1);
+        
+        if (flowRadius >= (targetRadius - COLLISION_RADIUS_TOLERANCE) && flowRadius <= (targetRadius + COLLISION_RADIUS_TOLERANCE)) {
+          if (checkCollision(flow.angle, botPlayer.angle)) {
+            scoredFlows.add(flowId);
+            flowsToRemove.add(flowId);
+            
+            if (flow.isEvil) {
+              decrementScore(botPlayer.playerId);
+              recordEvilHit(botPlayer.playerId); // Lifetime stats
+              incrementSessionEvilHits(botPlayer.playerId); // Session stats
+            } else {
+              incrementScore(botPlayer.playerId);
+              botPlayer.speedBoost++;
+              recordCatch(botPlayer.playerId, botPlayer.colorIndex ?? undefined);
+            }
+          }
+        }
+      });
+    });
+  }
+
+  async function spawnBot() {
+    // Check if there are free slots
+    const used = new Set<number>();
+    players.forEach(pl => { if (pl?.colorIndex != null) used.add(pl.colorIndex as number); });
+    // Also include bot players in the used set
+    botPlayers.forEach(bot => { if (bot.colorIndex != null) used.add(bot.colorIndex); });
+    
+    if (used.size >= PLAYER_COLORS.length) {
+      console.log('[Bot] All game slots are full');
+      return;
+    }
+    
+    try {
+      // Find free color for bot before joining
+      let botColor: number | null = null;
+      for (let i = 0; i < PLAYER_COLORS.length; i++) {
+        if (!used.has(i)) { botColor = i; break; }
+      }
+      
+      if (botColor === null) {
+        console.log('[Bot] No free color slots found');
+        return;
+      }
+      
+      // Use nest center angle
+      const startAngle = getNestAngle(botColor);
+      // Start at outermost layer (11) where nest is
+      const startLayer = MAX_LAYERS - 1;
+      
+      // Generate bot ID
+      const botId = `bot-${Date.now()}-${Math.floor(Math.random()*1000)}`;
+      
+      // Create bot player data directly in database (don't use joinGame which requires auth)
+      const playerData = {
+        id: botId,
+        angle: startAngle,
+        score: 0,
+        layer: startLayer,
+        colorIndex: botColor,
+        createdAt: Date.now(),
+        active: true,
+        lastSeen: Date.now(),
+        evilHits: 0,
+        isBot: true,
+        meta: {
+          country: null,
+          language: null,
+          creationTime: null,
+          lastSignInTime: null
+        }
+      };
+      
+      // Write bot to database
+      await set(ref(db, `${ROOM}/players/${botId}`), playerData);
+      
+      const newBot = {
+        playerId: botId,
+        angle: startAngle,
+        layer: startLayer,
+        colorIndex: botColor,
+        speedBoost: 0
+      };
+      
+      // Add to bot map (trigger reactivity)
+      botPlayers.set(botId, newBot);
+      botPlayers = botPlayers; // Trigger Svelte reactivity
+      
+      console.log('[Bot] Spawned bot player:', botId, 'at angle', startAngle, 'Total bots:', botPlayers.size);
+    } catch (e) {
+      console.error('[Bot] Failed to spawn bot:', e);
+    }
+  }
+
+  async function removeBot(botId?: string) {
+    if (botPlayers.size === 0) return;
+    
+    try {
+      // If specific botId provided, remove that one, otherwise remove the first bot
+      const targetBotId = botId || Array.from(botPlayers.keys())[0];
+      const bot = botPlayers.get(targetBotId);
+      
+      if (!bot) return;
+      
+      await setPlayerActive(bot.playerId, false);
+      await set(ref(db, `${ROOM}/players/${bot.playerId}`), null);
+      botPlayers.delete(targetBotId);
+      botPlayers = botPlayers; // Trigger Svelte reactivity
+      console.log('[Bot] Removed bot player:', targetBotId, 'Remaining bots:', botPlayers.size);
+    } catch (e) {
+      console.error('[Bot] Failed to remove bot:', e);
     }
   }
 
@@ -527,14 +912,40 @@
   const joined = await joinGame(() => {});
   myPlayer = joined as any;
   if (myPlayer) {
-    myAngle = myPlayer.playerData.angle;
+    myColorIndex = (myPlayer.playerData as any).colorIndex ?? null;
     myLayer = (myPlayer.playerData as any).layer ?? 0;
-        myColorIndex = (myPlayer.playerData as any).colorIndex ?? null;
+    
+    // If player has a color, position them at their nest center (ignore old angle from DB)
+    if (myColorIndex != null) {
+      myAngle = getNestAngle(myColorIndex);
+      myLayer = MAX_LAYERS - 1; // Ensure on outermost layer (11) where nests are
+      // Update database with correct nest position
+      updateAngle(myPlayer.playerId, myAngle);
+      updateLayer(myPlayer.playerId, myLayer);
+      setSessionEvilHits(myPlayer.playerId, 0); // Reset session evil hits
+      console.log('[PLAYER SPAWN - Rejoin] colorIndex:', myColorIndex, 
+                  'playerAngle:', (myAngle * 180 / Math.PI).toFixed(2) + '°',
+                  'layer:', myLayer);
+    } else {
+      // No color assigned yet, load angle from DB
+      myAngle = myPlayer.playerData.angle;
+      setSessionEvilHits(myPlayer.playerId, 0); // Reset session evil hits for new players too
+    }
+    
     console.log('Player joined:', myPlayer.playerId);
-      // Start presence heartbeat (every 10s)
+      // Start presence heartbeat (every 5s for better visibility)
       presenceInterval = setInterval(() => {
         if (myPlayer?.playerId) setLastSeen(myPlayer.playerId);
-      }, 10000);
+      }, 5000);
+      
+      // Set initial lastSeen immediately
+      setLastSeen(myPlayer.playerId);
+      
+      // Auto-spawn bot if enabled
+      if (autoSpawnBotOnJoin) {
+        console.log('[Bot] Auto-spawning bot on join...');
+        setTimeout(() => spawnBot(), 1000); // Delay to ensure player is fully initialized
+      }
   }
 
       unsubPlayers = listenPlayers(p => {
@@ -574,9 +985,19 @@
                 if (chosen != null) {
                   myColorIndex = chosen;
                   updateColor(myPlayer.playerId, chosen);
+                  // Set starting angle at nest center
+                  const nestAngle = getNestAngle(chosen);
+                  myAngle = nestAngle;
+                  updateAngle(myPlayer.playerId, nestAngle);
+                  // Set player to outermost layer (11) where nest is
+                  myLayer = MAX_LAYERS - 1;
+                  updateLayer(myPlayer.playerId, myLayer);
                   try { setPlayerActive(myPlayer.playerId, true); } catch {}
+                  try { setSessionEvilHits(myPlayer.playerId, 0); } catch {} // Reset session evil hits
                   try { set(ref(db, `${ROOM}/players/${myPlayer.playerId}/queued`), null); } catch {}
-                  console.log('[Queue] Auto-assigned color', chosen);
+                  console.log('[PLAYER SPAWN - Auto-assign] colorIndex:', chosen, 
+                              'playerAngle:', (myAngle * 180 / Math.PI).toFixed(2) + '°',
+                              'layer:', myLayer);
                 }
               }
             }
@@ -611,14 +1032,33 @@
     gameSessionStartTime = gameStartTime;
     difficultyLastAutoIncreaseAt = gameStartTime;
     pauseAccumAtDiffStart = pauseAccumulatedMs;
+    // Initialize lastKnownAngles for all players at start
+    players.forEach((pl) => {
+      if (pl && pl.id) lastKnownAngles.set(pl.id, pl.angle);
+    });
 
     // Increase difficulty every minute
     const difficultyInterval = setInterval(() => {
       if (pauseForNoPlayers) return; // freeze difficulty while paused
       if (difficulty < 10) {
+        // Before increasing difficulty, check for inactive players (no angle change since last difficulty)
+        players.forEach((pl) => {
+          if (!pl || !pl.id || !myPlayer || pl.id === myPlayer.playerId) return;
+          const lastAngle = lastKnownAngles.get(pl.id);
+          const currentAngle = pl.angle;
+          if (lastAngle !== undefined && Math.abs(currentAngle - lastAngle) < 0.0001) {
+            // Player hasn't moved since last difficulty change; mark inactive
+            try { setPlayerActive(pl.id, false); } catch (e) { console.warn('Failed to mark player inactive:', pl.id, e); }
+            console.log(`[Difficulty] Marking player ${prettyName(pl.id)} inactive (no movement)`);
+          }
+        });
         difficulty++;
         difficultyLastAutoIncreaseAt = Date.now();
         pauseAccumAtDiffStart = pauseAccumulatedMs;
+        // Snapshot current angles for next check
+        players.forEach((pl) => {
+          if (pl && pl.id) lastKnownAngles.set(pl.id, pl.angle);
+        });
         console.log('Difficulty increased to:', difficulty);
         // difficultySpeedMultiplier updates reactively from difficulty
       }
@@ -663,9 +1103,47 @@
       if (removed > 0) console.debug('[layer5 cleanup] removed flows:', removed);
     }, 60000);
 
+    // Cleanup inactive players every 5 minutes
+    const inactivePlayerCleanupInterval = setInterval(async () => {
+      const result = await cleanupInactivePlayers(5 * 60 * 1000); // 5 minutes
+      if (result.removed > 0) {
+        console.log(`[Inactive Players] Removed ${result.removed} inactive players, archived ${result.archived} to highscores`);
+      }
+    }, 5 * 60 * 1000); // Run every 5 minutes
+
     // Keyboard
     const onKey = (e: KeyboardEvent) => {
       keys[e.key] = e.type === 'keydown';
+      
+      // Debug mode: numpad +/- to adjust layers
+      if (dev && e.type === 'keydown') {
+        if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') {
+          // Increase layers
+          if (manualLayerCount === null) {
+            manualLayerCount = numLayers;
+          }
+          if (manualLayerCount < MAX_LAYERS) {
+            manualLayerCount++;
+            console.log(`[Debug] Layers increased to ${manualLayerCount}`);
+          }
+          e.preventDefault();
+        } else if (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract') {
+          // Decrease layers
+          if (manualLayerCount === null) {
+            manualLayerCount = numLayers;
+          }
+          if (manualLayerCount > 1) {
+            manualLayerCount--;
+            console.log(`[Debug] Layers decreased to ${manualLayerCount}`);
+          }
+          e.preventDefault();
+        }
+      }
+      
+      // Prevent arrow keys from scrolling the page or debug panel
+      if (e.key.startsWith('Arrow')) {
+        e.preventDefault();
+      }
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKey);
@@ -673,6 +1151,7 @@
     // Throttle state
     let lastAngleUpdateTime = 0;
     let lastAngleSent = myAngle;
+    let lastPresenceUpdateTime = 0;
     let raf: number;
 
     // Helper to stop game (for idle/blur)
@@ -683,6 +1162,7 @@
       try { clearInterval(difficultyInterval); } catch {}
       try { clearInterval(evilSpawnInterval); } catch {}
       try { clearInterval(layer5CleanupInterval); } catch {}
+      try { clearInterval(inactivePlayerCleanupInterval); } catch {}
       try { if (presenceInterval) clearInterval(presenceInterval); } catch {}
       try { goOffline(db); } catch {}
       try { cancelAnimationFrame(raf); } catch {}
@@ -697,6 +1177,33 @@
       
       // Get current time at the start of the loop
       const now = Date.now();
+      
+      // Track FPS - count frames and update display values every second
+      frameCount++;
+      const frameDelta = now - lastFrameTime;
+      lastFrameTime = now;
+      
+      // Update FPS display once per second
+      if (now - lastFpsUpdateTime >= 1000) {
+        const elapsed = (now - lastFpsUpdateTime) / 1000;
+        currentFps = Math.round(frameCount / elapsed);
+        fpsHistory.push(currentFps);
+        if (fpsHistory.length > 60) fpsHistory.shift(); // Keep last 60 seconds
+        averageFps = Math.round(fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length);
+        frameCount = 0;
+        lastFpsUpdateTime = now;
+      }
+      
+      // Calculate allowed layer range
+      const minAllowedLayer = MAX_LAYERS - numLayers;
+      const maxAllowedLayer = MAX_LAYERS - 1;
+      
+      // Check if player is on a layer that no longer exists and move them to nearest valid layer
+      if (myPlayer && myLayer < minAllowedLayer) {
+        myLayer = minAllowedLayer;
+        updateLayer(myPlayer.playerId, myLayer);
+      }
+      
       // Update pause state from current players
       const nowTs = now;
       const online = players.some((pl) => {
@@ -738,24 +1245,40 @@
       mobileLeftPressed = !!(keys.ArrowLeft || keys.a || keys.A);
       mobileRightPressed = !!(keys.ArrowRight || keys.d || keys.D);
       
-      // Input
-      if (keys.ArrowLeft || keys.a || keys.A) { myAngle = normalizeAngle(myAngle - debugSpeed); lastMovementTime = Date.now(); }
-      if (keys.ArrowRight || keys.d || keys.D) { myAngle = normalizeAngle(myAngle + debugSpeed); lastMovementTime = Date.now(); }
+      // Input (with speed boost applied: +1% per boost)
+      const effectiveDebugSpeed = debugSpeed * (1 + mySpeedBoost * 0.01);
+      if (keys.ArrowLeft || keys.a || keys.A) { 
+        myAngle = normalizeAngle(myAngle - effectiveDebugSpeed); 
+        lastMovementTime = Date.now();
+      }
+      if (keys.ArrowRight || keys.d || keys.D) { 
+        myAngle = normalizeAngle(myAngle + effectiveDebugSpeed); 
+        lastMovementTime = Date.now();
+      }
       
         // Layer switching with debounce (200ms between changes)
+        // Layers numbered 0-11, where 11 is outermost (nest), 0 is innermost (sun)
+        // Up = move away from sun (increase layer), Down = move towards sun (decrease layer)
+        // Players can only move to layers that exist: (MAX_LAYERS - numLayers) to (MAX_LAYERS - 1)
+        
         if ((keys.ArrowUp || keys.w || keys.W || keys.ArrowDown || keys.s || keys.S) && now - lastLayerChange > 200) {
-          if ((keys.ArrowUp || keys.w || keys.W) && myLayer > 0) {
-            myLayer--;
+          if ((keys.ArrowUp || keys.w || keys.W) && myLayer < maxAllowedLayer) {
+            myLayer++; // Move away from sun
             lastLayerChange = now;
             lastMovementTime = Date.now();
             if (myPlayer?.playerId) updateLayer(myPlayer.playerId, myLayer);
-          } else if ((keys.ArrowDown || keys.s || keys.S) && myLayer < NUM_LAYERS - 1) {
-            myLayer++;
+          } else if ((keys.ArrowDown || keys.s || keys.S) && myLayer > minAllowedLayer) {
+            myLayer--; // Move towards sun
             lastLayerChange = now;
             lastMovementTime = Date.now();
             if (myPlayer?.playerId) updateLayer(myPlayer.playerId, myLayer);
           }
         }
+
+      // Update bot AI (for all active bots)
+      if (botPlayers.size > 0) {
+        updateBotAI(now);
+      }
 
       // Clear
       ctx.fillStyle = '#111';
@@ -766,25 +1289,107 @@
       ctx.beginPath();
       ctx.arc(CENTER_X, CENTER_Y, INNER_R, 0, Math.PI * 2);
       ctx.fill();
-      
-        // Draw layer rings (from innermost to outermost)
-        for (let i = 0; i < NUM_LAYERS; i++) {
-          const innerRadius = i === 0 ? INNER_R : LAYER_RADII[i - 1];
-          const outerRadius = LAYER_RADII[i];
+
+      // Game title on the center circle
+      {
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
         
-          ctx.fillStyle = LAYER_COLORS[i];
+        // Use Roboto font with fallbacks
+        ctx.font = 'bold 14px Roboto, "Helvetica Neue", Arial, sans-serif';
+        ctx.fillStyle = '#000';
+        ctx.globalAlpha = 0.9;
+        
+        const titleLine1 = 'Flow ~together~';
+        const titleLine2 = 'made with 🩸, 💦 & ❤️';
+        const titleLine3 = 'by a gothenburgian';
+        
+        // Calculate total height for vertical centering
+        const line1Height = 14;
+        const line2Height = 10;
+        const line3Height = 10;
+        const spacing = 6;
+        const totalHeight = line1Height + spacing + line2Height + spacing + line3Height;
+        const startY = CENTER_Y - totalHeight / 2 + line1Height / 2;
+        
+        // Draw centered text
+        ctx.fillText(titleLine1, CENTER_X, startY);
+        ctx.font = '10px Roboto, "Helvetica Neue", Arial, sans-serif';
+        ctx.fillText(titleLine2, CENTER_X, startY + line1Height / 2 + spacing + line2Height / 2);
+        ctx.fillText(titleLine3, CENTER_X, startY + line1Height / 2 + spacing + line2Height + spacing + line3Height / 2);
+        
+        ctx.globalAlpha = 1;
+        ctx.restore();
+      }
+      
+        // Draw layer rings using fixed spacing
+        // Layers are numbered 0-11, we only draw layers (MAX_LAYERS - numLayers) through (MAX_LAYERS - 1)
+        const minLayerIndex = MAX_LAYERS - numLayers;
+        for (let layerIdx = minLayerIndex; layerIdx < MAX_LAYERS; layerIdx++) {
+          const innerRadius = INNER_R + FIXED_LAYER_SPACING * layerIdx;
+          const outerRadius = INNER_R + FIXED_LAYER_SPACING * (layerIdx + 1);
+          
+          // Map layerIdx to color index (0 to numLayers-1 for the color array)
+          const colorIndex = layerIdx - minLayerIndex;
+          ctx.fillStyle = layerColors[colorIndex];
           ctx.beginPath();
           ctx.arc(CENTER_X, CENTER_Y, outerRadius, 0, Math.PI * 2);
           ctx.arc(CENTER_X, CENTER_Y, innerRadius, 0, Math.PI * 2, true); // Draw hole
           ctx.fill();
         }
 
-      // Players - each gets a unique color based on their ID
+      // Draw player nests (wheel segments in outermost layer)
+      {
+        // Nests are always at the fixed outermost position (MAX_LAYERS - 1)
+        const outermostRadius = INNER_R + FIXED_LAYER_SPACING * MAX_LAYERS;
+        const nestAngularWidth = (Math.PI * 2) / PLAYER_COLORS.length; // Divide circle evenly, no gaps
+        
+        PLAYER_COLORS.forEach((colorData, idx) => {
+          // Calculate nest position to fill entire circle with no gaps
+          const nestStartAngle = (idx * nestAngularWidth) - (Math.PI * 2 / 4); // Start from top, rotate -90°
+          const nestEndAngle = nestStartAngle + nestAngularWidth;
+          const nestCenterAngle = (nestStartAngle + nestEndAngle) / 2;
+          
+          // Check if this color is active
+          const isActive = activeUsedColorsAll.has(idx);
+          
+          // Draw main nest arc with low opacity (0.2) - use white color
+          ctx.globalAlpha = 0.2;
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 25;
+          ctx.lineCap = 'butt'; // Square caps so nests connect seamlessly
+          ctx.beginPath();
+          ctx.arc(CENTER_X, CENTER_Y, outermostRadius, nestStartAngle, nestEndAngle);
+          ctx.stroke();
+          ctx.globalAlpha = 1.0; // Reset opacity
+          
+          // Draw bright outer border if active (this is the collision detector at 0.8 opacity)
+          if (isActive) {
+            ctx.globalAlpha = 0.8;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 4;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.arc(CENTER_X, CENTER_Y, outermostRadius + 12.5, nestStartAngle, nestEndAngle); // Outer edge
+            ctx.stroke();
+            ctx.globalAlpha = 1.0; // Reset opacity
+          }
+        });
+      }
+
+      // Players - render only currently active players (active flag true and fresh lastSeen)
       players.forEach((p, i) => {
         if (!p || !p.id) return;
+        // Only show active players' fragments
+        const ls = (p as any)?.lastSeen;
+        const activeFlag = (p as any)?.active !== false;
+        const fresh = typeof ls === 'number' ? (now - ls) < 30000 : true;
+        const isCurrentlyActive = activeFlag && fresh;
+        if (!isCurrentlyActive) return;
         
         // Check if this is the current player and if hurt animation is active
-        const isMyPlayer = i === 0;
+        const isMyPlayer = !!(myPlayer && p.id === myPlayer.playerId);
         const isHurt = isMyPlayer && now < hurtUntil;
         
         // Blink effect: show/hide every 100ms during hurt animation
@@ -792,20 +1397,20 @@
           return; // Skip rendering during blink-off phase
         }
         
-    // Generate unique color from player ID (stable across sessions)
-  // Use palette color if assigned
-  const cIndex = (i === 0 ? myColorIndex : p.colorIndex);
+    // Use palette color if assigned (use myColorIndex for my player)
+  const cIndex = (isMyPlayer ? myColorIndex : p.colorIndex);
   const color = (cIndex != null && PLAYER_COLORS[cIndex]) ? PLAYER_COLORS[cIndex].hex : '#888';
         
-    // Get player's layer and corresponding radius
-    const playerLayer = i === 0 ? myLayer : (p.layer ?? 0);
-    const layerRadius = LAYER_RADII[playerLayer];
+  // Get player's layer and corresponding radius
+  const playerLayer = isMyPlayer ? myLayer : (p.layer ?? 0);
+    // Use fixed layer spacing - layers are numbered 0-11, where 11 is outermost
+    const layerRadius = INNER_R + FIXED_LAYER_SPACING * (playerLayer + 1);
         
         ctx.strokeStyle = color;
         ctx.lineWidth = 25;
         ctx.lineCap = 'round';
         ctx.beginPath();
-        const angle = i === 0 ? myAngle : p.angle;
+    const angle = isMyPlayer ? myAngle : p.angle;
         const startA = normalizeAngle(angle - PIPE_WIDTH / 2);
         const endA = normalizeAngle(angle + PIPE_WIDTH / 2);
     ctx.arc(CENTER_X, CENTER_Y, layerRadius, startA, endA);
@@ -817,6 +1422,32 @@
         ctx.beginPath();
     ctx.arc(CENTER_X, CENTER_Y, layerRadius, startA, endA);
         ctx.stroke();
+
+        // Speed boost indicator (draw small triangles/chevrons if myPlayer has boosts)
+        if (isMyPlayer && mySpeedBoost > 0) {
+          const midAngle = angle;
+          const numChevrons = Math.min(3, mySpeedBoost); // 1 chevron per boost, max 3 visible
+          const chevronGap = 12;
+          const baseOffset = layerRadius + 18;
+          for (let c = 0; c < numChevrons; c++) {
+            const offset = baseOffset + c * chevronGap;
+            const cx = CENTER_X + Math.cos(midAngle) * offset;
+            const cy = CENTER_Y + Math.sin(midAngle) * offset;
+            const size = 6;
+            // Draw a small forward-facing triangle (speed indicator)
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(midAngle);
+            ctx.fillStyle = '#ffcc00';
+            ctx.beginPath();
+            ctx.moveTo(size, 0);
+            ctx.lineTo(-size/2, -size/2);
+            ctx.lineTo(-size/2, size/2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+          }
+        }
       });
 
       // Flows - render from cache and remove by radius threshold (with generous overshoot)
@@ -906,13 +1537,19 @@
       // Check collisions only on active flows
       if (myPlayer) {
         activeFlows.forEach(checkScore);
+        // Check nest collisions for all active players
+        activeFlows.forEach(checkNestCollisions);
         // Remove collided flows from cache immediately
         flowsToRemove.forEach((fid) => { if (flowCache.has(fid)) flowCache.delete(fid); });
       }
 
       // Scores overlay (sorted by score desc): [flag] [name] [score] [-hits] (session + active filtering, grayed inactive)
+      // Now rendered in HTML overlay with flag icons
       {
         const hsMap = new Map<string, Highscore>(highscores.map(h => [h.id, h]));
+        const now = Date.now();
+        const FIVE_MINUTES_MS = 5 * 60 * 1000; // 5 minutes in milliseconds
+        
         const list = [...players]
           .filter(p => p && p.id)
           .filter(p => {
@@ -920,55 +1557,80 @@
             const inSession = typeof ls === 'number' ? (ls >= gameSessionStartTime) : true;
             return inSession;
           })
+          .filter(p => {
+            // Only show players who have been active in the last 5 minutes
+            const ls = (p as any)?.lastSeen;
+            if (typeof ls !== 'number') return false; // Hide if no lastSeen data (old/legacy players)
+            const timeSinceLastSeen = now - ls;
+            return timeSinceLastSeen < FIVE_MINUTES_MS;
+          })
           .sort((a, b) => (b.score || 0) - (a.score || 0));
-        const leftPad = 20;
-        const topPad = 40;
-        const lineH = 24;
-        ctx.textAlign = 'left';
-        ctx.font = '16px Arial';
-        list.forEach((p, i) => {
-          const y = topPad + i * lineH;
+        
+        // Update scoreboardList for HTML overlay
+        scoreboardList = list.map(p => {
           const name = prettyName(p.id);
           const score = typeof p.score === 'number' ? p.score : 0;
           const hs = hsMap.get(p.id);
-          const hits = hs?.evilHits ?? 0;
+          const hits = (p as any)?.evilHits ?? 0; // Use session hits from player object
           const cc = hs?.country || getCountryFromMeta((p as any)?.meta) || null;
-          const flag = countryCodeToFlagEmoji(cc);
           const activeFlag = (p as any)?.active !== false;
           const ls = (p as any)?.lastSeen;
-          const fresh = typeof ls === 'number' ? (Date.now() - ls) < 30000 : true;
+          const fresh = typeof ls === 'number' ? (now - ls) < 30000 : true;
           const currentlyActive = activeFlag && fresh;
-          ctx.globalAlpha = currentlyActive ? 1 : 0.45;
-
-          let x = leftPad;
-          // Flag
-          ctx.fillStyle = '#fff';
-          ctx.fillText(flag, x, y);
-          x += ctx.measureText(flag).width + 8;
-          // Name
-          ctx.fillStyle = '#fff';
-          ctx.fillText(name, x, y);
-          const nameW = ctx.measureText(name).width;
-          // Underline in player's color
-          const underlineY = y + 3;
-          ctx.strokeStyle = colorForPlayer(p);
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(x, underlineY);
-          ctx.lineTo(x + nameW, underlineY);
-          ctx.stroke();
-          x += nameW + 10;
-          // Score
-          const scoreStr = String(score);
-          ctx.fillStyle = '#fff';
-          ctx.fillText(scoreStr, x, y);
-          x += ctx.measureText(scoreStr).width + 8;
-          // -hits
-          const hitsStr = `-${hits}`;
-          ctx.fillStyle = '#f88';
-          ctx.fillText(hitsStr, x, y);
-          ctx.globalAlpha = 1;
+          return {
+            id: p.id,
+            name,
+            score,
+            hits,
+            country: cc,
+            color: colorForPlayer(p),
+            active: currentlyActive
+          };
         });
+      }
+
+      // Top-right canvas overlay: game slots (active usage) visual (12 dots)
+      {
+        const slotCount = PLAYER_COLORS.length;
+        const dotSize = 12;
+        const gap = 6;
+        const margin = 12;
+        const panelPadding = 8;
+        const panelW = slotCount * dotSize + (slotCount - 1) * gap + panelPadding * 2;
+        const panelH = dotSize + panelPadding * 2 + 14; // extra for label
+        const panelX = canvas.width - panelW - margin;
+        const panelY = margin;
+        // Panel background
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(panelX, panelY, panelW, panelH);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelW - 1, panelH - 1);
+        // Label
+        ctx.font = '12px Arial';
+        ctx.fillStyle = '#ccc';
+        const activeSlots = activeUsedColorsAll.size;
+        ctx.fillText(`Slots ${activeSlots}/${slotCount}`, panelX + panelPadding, panelY + 14);
+        // Dots row
+        const dotsY = panelY + panelPadding + 14;
+        for (let i = 0; i < slotCount; i++) {
+          const x = panelX + panelPadding + i * (dotSize + gap);
+          const isTaken = activeUsedColorsAll.has(i);
+          const isMine = myColorIndex === i;
+          const color = isTaken ? PLAYER_COLORS[i].hex : '#444';
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          ctx.arc(x + dotSize / 2, dotsY + dotSize / 2, dotSize / 2, 0, Math.PI * 2);
+          ctx.fill();
+          // Outline
+          ctx.strokeStyle = isMine ? '#fff' : (isTaken ? color + 'aa' : '#666');
+          ctx.lineWidth = isMine ? 2 : 1;
+          ctx.beginPath();
+          ctx.arc(x + dotSize / 2, dotsY + dotSize / 2, dotSize / 2 + (isMine?1:0), 0, Math.PI * 2);
+          ctx.stroke();
+        }
       }
 
       // Difficulty countdown bar (bottom of canvas) - paused-aware
@@ -981,6 +1643,57 @@
         const barHeight = 14;
         const padding = 8;
         const y = canvas.height - barHeight - padding;
+        // Above the bar: left = my name with color, right = playtime
+        {
+          const nameX = 8;
+          const labelY = y - 6;
+          ctx.font = '14px Arial';
+          ctx.textAlign = 'left';
+          ctx.globalAlpha = 1;
+          let myName = '—';
+          let colorHex = '#888';
+          if (myPlayer) {
+            myName = prettyName(myPlayer.playerId);
+            if (myColorIndex != null && PLAYER_COLORS[myColorIndex]) colorHex = PLAYER_COLORS[myColorIndex].hex;
+          }
+          // Color dot
+          ctx.fillStyle = colorHex;
+          ctx.beginPath();
+          ctx.arc(nameX + 6, labelY - 6, 5, 0, Math.PI * 2);
+          ctx.fill();
+          // Name with underline in color
+          const textX = nameX + 18;
+          ctx.fillStyle = '#fff';
+          ctx.fillText(myName, textX, labelY);
+          const w = ctx.measureText(myName).width;
+          ctx.strokeStyle = colorHex + 'cc';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(textX, labelY + 3);
+          ctx.lineTo(textX + w, labelY + 3);
+          ctx.stroke();
+
+          // Right side: FPS above playtime
+          ctx.textAlign = 'right';
+          ctx.fillStyle = '#fff';
+          const fpsLabel = `FPS: ${currentFps} (avg: ${averageFps})`;
+          ctx.fillText(fpsLabel, canvas.width - 8, labelY - 20);
+          
+          // Right side: playtime since session start
+          const playMs = Math.max(0, nowMs - gameSessionStartTime);
+          const totalSec = Math.floor(playMs / 1000);
+          const h = Math.floor(totalSec / 3600);
+          const m = Math.floor((totalSec % 3600) / 60);
+          const s = totalSec % 60;
+          const timeStr = h > 0
+            ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+            : `${m}:${String(s).padStart(2,'0')}`;
+          const rightLabel = `Playtime ${timeStr}`;
+          ctx.textAlign = 'right';
+          ctx.fillStyle = '#fff';
+          ctx.fillText(rightLabel, canvas.width - 8, labelY);
+          ctx.textAlign = 'left';
+        }
         // Background bar (full width)
         ctx.fillStyle = '#222';
         ctx.globalAlpha = 0.85;
@@ -1013,6 +1726,12 @@
           updateAngle(myPlayer.playerId, myAngle);
           lastAngleUpdateTime = now2;
           lastAngleSent = myAngle;
+        }
+        
+        // Periodic presence updates every 3 seconds to ensure visibility
+        if (now2 - lastPresenceUpdateTime > 3000) {
+          setLastSeen(myPlayer.playerId);
+          lastPresenceUpdateTime = now2;
         }
       }
 
@@ -1057,6 +1776,10 @@
   });
 </script>
 
+<svelte:head>
+  <title>Flow ~together~ made with 🩸, 💦 & ❤️ by a gothenburgian</title>
+</svelte:head>
+
 {#if dev}
 <div style="position: absolute; top: 10px; right: 10px; z-index: 10;">
   <button on:click={toggleDebug} style="background:#333; color:#fff; border:none; border-radius:6px; padding:6px 10px; cursor:pointer; margin-bottom:6px; width:100%;">
@@ -1085,6 +1808,23 @@
 
   <div style="margin-top: 12px;">
     <label for="colorSelect">Player Color</label>
+    <div style="margin-top:4px; font-size:12px; opacity:.85;">
+      Game slots (active): {activeUsedColorsAll.size}/{PLAYER_COLORS.length}
+    </div>
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+      {#each PLAYER_COLORS as c, idx}
+        {#key activeUsedColorsAll}
+          <div
+            title={ownerLabelFor(idx) ? `Taken by ${ownerLabelFor(idx)}` : 'Available'}
+            style={`width:16px;height:16px;border-radius:50%;
+                    background:${activeUsedColorsAll.has(idx)?PLAYER_COLORS[idx].hex:'#444'};
+                    border:${myColorIndex===idx?'2px solid #fff':'1px solid #666'};
+                    box-shadow:${activeUsedColorsAll.has(idx)?'0 0 6px rgba(255,255,255,.2)':'none'};
+                    `}
+          ></div>
+        {/key}
+      {/each}
+    </div>
     {#if myPlayer}
       <select id="colorSelect" style="width: 100%; margin-top: 6px;"
         on:change={(e) => {
@@ -1138,6 +1878,66 @@
   <button style="margin-top: 8px; width: 100%; padding: 8px; background: #2e2e2e; color: #fff; border: 1px solid #555; border-radius: 4px; cursor: pointer;" on:click={logPlayersInfo}>
     Log Player Data to Console
   </button>
+  <div style="margin-top: 12px;">
+    <b>Bot Players ({botPlayers.size}/{PLAYER_COLORS.length})</b>
+    <label style="display:flex; align-items:center; gap:6px; margin-top:4px; font-size:12px;">
+      <input type="checkbox" bind:checked={autoSpawnBotOnJoin} />
+      Auto-add 1 bot on join
+    </label>
+    <div style="margin-top:4px; font-size:11px; opacity:.65;">
+      Automatically spawns one bot player when you join the game. Persists across sessions.
+    </div>
+    <button style="margin-top: 6px; width: 100%; padding: 8px; background: #336633; color: #fff; border: none; border-radius: 4px; cursor: pointer;" on:click={spawnBot}>
+      Add Bot Player
+    </button>
+    {#if botPlayers.size > 0}
+      <button style="margin-top: 6px; width: 100%; padding: 8px; background: #663333; color: #fff; border: none; border-radius: 4px; cursor: pointer;" on:click={() => removeBot()}>
+        Remove Bot
+      </button>
+      <div style="margin-top:4px; font-size:12px; opacity:.8;">
+        {#each Array.from(botPlayers.values()) as bot, i}
+          <div>Bot {i + 1}: Layer {bot.layer}, Boost {bot.speedBoost}</div>
+        {/each}
+      </div>
+    {/if}
+  </div>
+  <div style="margin-top: 12px;">
+    <b>Game Layers ({numLayers}/{MAX_LAYERS})</b>
+    {#if manualLayerCount !== null}
+      <div style="margin-top:4px; font-size:12px; color:#fa3;">Manual override active</div>
+    {/if}
+    <div style="display: flex; gap: 4px; margin-top: 6px;">
+      <button 
+        style="flex: 1; padding: 8px; background: #663333; color: #fff; border: none; border-radius: 4px; cursor: pointer;"
+        disabled={numLayers <= 1}
+        on:click={() => {
+          if (manualLayerCount === null) {
+            manualLayerCount = numLayers;
+          }
+          manualLayerCount = Math.max(1, manualLayerCount - 1);
+        }}>
+        − Remove Layer
+      </button>
+      <button 
+        style="flex: 1; padding: 8px; background: #336633; color: #fff; border: none; border-radius: 4px; cursor: pointer;"
+        disabled={numLayers >= MAX_LAYERS}
+        on:click={() => {
+          if (manualLayerCount === null) {
+            manualLayerCount = numLayers;
+          }
+          manualLayerCount = Math.min(MAX_LAYERS, manualLayerCount + 1);
+        }}>
+        + Add Layer
+      </button>
+    </div>
+    {#if manualLayerCount !== null}
+      <button 
+        style="margin-top: 6px; width: 100%; padding: 6px; background: #444; color: #fff; border: 1px solid #666; border-radius: 4px; cursor: pointer; font-size: 12px;"
+        on:click={() => { manualLayerCount = null; }}>
+        Reset to Auto (by active players)
+      </button>
+    {/if}
+  </div>
   <button style="margin-top: 8px; width: 100%; padding: 8px; background: #444; color: #fff; border: none; border-radius: 4px; cursor: pointer;" on:click={async () => {
     const removed = await pruneOldFlows(5 * 60 * 1000);
     console.debug('Pruned old flows (5m):', removed);
@@ -1155,6 +1955,13 @@
     console.debug('Player meta cleanup complete. Records updated:', updated);
   }}>
     Cleanup Player Meta
+  </button>
+  <button style="margin-top: 8px; width: 100%; padding: 8px; background: #664400; color: #fff; border: none; border-radius: 4px; cursor: pointer;" on:click={async () => {
+    console.log('🧹 Cleaning up inactive players...');
+    const result = await cleanupInactivePlayers(5 * 60 * 1000);
+    console.log(`Removed ${result.removed} inactive players, archived ${result.archived} to highscores`);
+  }}>
+    Cleanup Inactive Players (5min)
   </button>
   <button style="margin-top: 8px; width: 100%; padding: 8px; background: #336633; color: #fff; border: none; border-radius: 4px; cursor: pointer;" on:click={async () => {
     console.log('📊 Analyzing database size...');
@@ -1198,6 +2005,13 @@
         }
       }} /> Enable idle auto-off (1 min)
     </label>
+    <label style="display:flex; align-items:center; gap:6px; margin-top:4px; font-size:12px;">
+      <input type="checkbox" bind:checked={markInactiveOnWindowInactive} />
+      Mark me inactive when window/tab is inactive
+    </label>
+    <div style="margin-top:4px; font-size:11px; opacity:.65;">
+      If enabled, losing focus or hiding the tab will set you inactive and stop the game. This persists across sessions.
+    </div>
     {#if !isIdle}
       {#if idleEnabled}
         <div style="margin-top:4px;">Time until idle: {(idleRemainingMs/1000).toFixed(1)}s</div>
@@ -1221,7 +2035,39 @@
   </div>
 </div>
 {/if}
-<canvas id="gameCanvas" class="mx-auto block" width={CANVAS_SIZE} height={CANVAS_SIZE}></canvas>
+
+<!-- Canvas Container with Scoreboard Overlay -->
+<div style="position: relative; display: inline-block; margin: 0 auto;">
+  <canvas id="gameCanvas" class="mx-auto block" width={CANVAS_SIZE} height={CANVAS_SIZE}></canvas>
+  
+  <!-- Scoreboard Overlay (top-left of canvas) -->
+  <div style="position: absolute; top: 0; left: 0; pointer-events: none; width: 100%; height: 100%;">
+    <div style="position: absolute; top: 2.5%; left: 2.5%; pointer-events: auto;">
+      <div style="font-family: Arial, sans-serif; color: #fff; font-size: 2.2vmin; font-weight: bold; margin-bottom: 1vmin; opacity: 0.9;">
+        Scores
+      </div>
+      {#each scoreboardList as entry, i (entry.id)}
+        {@const FlagComp = getFlagComponent(entry.country)}
+        <div style="display: flex; align-items: center; gap: 1vmin; margin-bottom: 0.25vmin; opacity: {entry.active ? 1 : 0.45}; font-family: Arial, sans-serif; font-size: 1.95vmin;">
+          {#if FlagComp}
+            <svelte:component this={FlagComp} style="width: 2.4vmin; height: 1.8vmin; border-radius: 0.25vmin; overflow: hidden; flex-shrink: 0;" />
+          {:else}
+            <span style="width: 2.4vmin; display: inline-block; flex-shrink: 0;">🏳️</span>
+          {/if}
+          <span style="color: #fff; text-decoration: underline; text-decoration-color: {entry.color}; text-decoration-thickness: 0.25vmin; text-underline-offset: 0.4vmin;">
+            {entry.name}
+          </span>
+          <span style="color: #fff; margin-left: 0.25vmin;">
+            {entry.score}
+          </span>
+          <span style="color: #f88; margin-left: 0.25vmin;">
+            -{entry.hits}
+          </span>
+        </div>
+      {/each}
+    </div>
+  </div>
+</div>
 
 <!-- Inactive Player Dialog -->
 {#if showInactiveDialog}
@@ -1285,7 +2131,7 @@
 </div>
 
 <style>
-  :global(body) { margin: 0; background: #000; }
+  :global(html, body) { margin: 0; background: #111; }
   canvas { max-width: 100vw; max-height: 100vh; object-fit: contain; }
   /* Improve readability of the color dropdown in the dark debug panel */
   #debugPanel select {
@@ -1307,7 +2153,14 @@
 
 <!-- Lifetime Highscores Panel (bottom-left) -->
 <div style="position: absolute; bottom: 10px; left: 10px; z-index: 9;">
-  <div style="background:#1d1d1d; color:#fff; padding:10px 12px; border-radius:8px; width: 320px; box-shadow: 0 2px 10px rgba(0,0,0,.35);">
+  <button on:click={() => { hsOpen = !hsOpen; }}
+    style="background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:6px 10px; cursor:pointer; width: 320px; text-align:left; margin-bottom:6px;">
+    {hsOpen ? 'Hide Highscores' : 'Show Highscores'}
+  </button>
+  <div style="background:#1d1d1d; color:#fff; padding:10px 12px; border-radius:8px; width: 320px; box-shadow: 0 2px 10px rgba(0,0,0,.35);"
+       style:display={hsOpen ? 'block' : 'none'}
+       style:opacity={hsOpen ? 1 : 0}
+  >
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
       <div style="font-weight:600;">Lifetime Highscores</div>
       {#if Date.now() - hsLastLoaded >= HS_RELOAD_COOLDOWN}
@@ -1325,32 +2178,21 @@
     {#if highscores.length === 0}
       <div style="font-size:13px; opacity:.8;">No data yet.</div>
     {:else}
-      <div style="max-height: 220px; overflow:auto;">
+      <div style="max-height: 400px; overflow:auto;">
         {#each highscores as h, i (h.id)}
+          {@const FlagComp = getFlagComponent(h.country)}
           <div style="display:flex; align-items:center; gap:10px; padding:6px 0; border-top: 1px solid #2a2a2a;"
                style:opacity={players.some(pl => pl.id === h.id) ? 1 : 0.55}
                title={`Last updated: ${h.lastUpdated?new Date(h.lastUpdated).toLocaleString():''}${h.country?`\nCountry: ${h.country}`:''}`}>
-            <div style="width: 18px; text-align:right; opacity:.8;">{i+1}.</div>
-            {#if h.colorIndex != null && PLAYER_COLORS[h.colorIndex]}
-              <div style={`width:14px;height:14px;border-radius:50%;background:${PLAYER_COLORS[h.colorIndex].hex};`}></div>
-            {:else}
-              <div style="width:14px;height:14px;border-radius:50%;background:#666;"></div>
-            {/if}
+            <div style="width: 24px; text-align:right; opacity:.8;">{i+1}.</div>
             <div style="flex:1;">
               <div style="font-size:14px; display:flex; align-items:center; gap:6px;">
-                {#if FlagComp && h.country}
-                  <svelte:component this={FlagComp} code={h.country} style="width:16px;height:12px;border-radius:2px; overflow:hidden;" />
+                {#if FlagComp}
+                  <svelte:component this={FlagComp} style="width:16px;height:12px;border-radius:2px; overflow:hidden;" />
                 {/if}
-                {#if h.colorIndex != null && PLAYER_COLORS[h.colorIndex]}
-                  <span style={`text-decoration: underline; text-decoration-color: ${PLAYER_COLORS[h.colorIndex].hex}; text-decoration-thickness: 2px; text-underline-offset: 3px;`}>
-                    {prettyName(h.id)}
-                  </span>
-                {:else}
+                <span>
                   {prettyName(h.id)}
-                {/if}
-                {#if h.colorIndex != null && PLAYER_COLORS[h.colorIndex]}
-                  <span style="opacity:.7; font-size:12px;"> · {PLAYER_COLORS[h.colorIndex].name}</span>
-                {/if}
+                </span>
               </div>
               <div style="font-size:12px; opacity:.8;">Catches: {h.totalCatches || 0} · Evil hits: {h.evilHits || 0}</div>
             </div>
