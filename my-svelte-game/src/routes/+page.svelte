@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, recordCatch, recordEvilHit, pruneOldFlows, fetchHighscores, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, cleanBotHighscores, auth, db, ROOM } from '$lib/firebase.js';
+  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, recordCatch, recordEvilHit, pruneOldFlows, fetchHighscores, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, cleanBotHighscores, cleanupStaleBots, auth, db, ROOM } from '$lib/firebase.js';
   import { ref, set, goOffline } from 'firebase/database';
   import { browser, dev } from '$app/environment';
 
@@ -202,6 +202,15 @@
   let emulateMobileTouch = false;
   let lastMovementTime = Date.now();
   let idleRemainingMs = IDLE_TIMEOUT_MS;
+
+  // Victory screen state
+  let showVictoryScreen = false;
+  let victoryStats: {
+    podium: Array<{id: string; name: string; score: number; country: string | null; colorIndex: number | null}>;
+    mostBadHits: {id: string; name: string; hits: number; country: string | null} | null;
+    mostLayerMoves: {id: string; name: string; moves: number; country: string | null} | null;
+    nearestToSun: {id: string; name: string; layer: number; country: string | null} | null;
+  } = { podium: [], mostBadHits: null, mostLayerMoves: null, nearestToSun: null };
 
   // FPS tracking
   let lastFrameTime = Date.now();
@@ -666,6 +675,10 @@
   let pauseForNoPlayers = false;        // true when no active players
   // Track last known angles to detect inactive players on difficulty changes
   const lastKnownAngles = new Map<string, number>();
+  // Game speed multiplier (debug)
+  let gameSpeedMultiplier = 1; // 1x to 5x with 0.2 increments
+  let lastRealTime = 0; // Track real time for game speed calculation
+  let gameTimeAccumulator = 0; // Accumulated game time with speed applied
 
   // Hurt animation state
   let hurtUntil = 0; // Timestamp when hurt animation ends
@@ -1140,6 +1153,76 @@
     }
   }
 
+  // Calculate victory stats for end-of-game screen
+  function calculateVictoryStats() {
+    // Get top 3 by score (podium)
+    const sortedByScore = [...players]
+      .filter(p => p.active && !p.isBot) // Exclude bots
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 3);
+    
+    const podium = sortedByScore.map(p => ({
+      id: p.id,
+      name: prettyName(p.id),
+      score: p.score || 0,
+      country: p.meta?.country || null,
+      colorIndex: p.colorIndex ?? null
+    }));
+    
+    // Most bad hits (evil flows hit)
+    const sortedByBadHits = [...players]
+      .filter(p => p.active && !p.isBot && (p.sessionEvilHits || 0) > 0)
+      .sort((a, b) => (b.sessionEvilHits || 0) - (a.sessionEvilHits || 0));
+    const mostBadHits = sortedByBadHits.length > 0 ? {
+      id: sortedByBadHits[0].id,
+      name: prettyName(sortedByBadHits[0].id),
+      hits: sortedByBadHits[0].sessionEvilHits || 0,
+      country: sortedByBadHits[0].meta?.country || null
+    } : null;
+    
+    // Most layer moves (track this via a new counter - for now use speed boost as proxy)
+    const sortedByBoost = [...players]
+      .filter(p => p.active && !p.isBot && (p.speedBoost || 0) > 0)
+      .sort((a, b) => (b.speedBoost || 0) - (a.speedBoost || 0));
+    const mostLayerMoves = sortedByBoost.length > 0 ? {
+      id: sortedByBoost[0].id,
+      name: prettyName(sortedByBoost[0].id),
+      moves: sortedByBoost[0].speedBoost || 0, // Using speed boost as proxy for activity
+      country: sortedByBoost[0].meta?.country || null
+    } : null;
+    
+    // Nearest to the sun (lowest layer number)
+    const sortedByLayer = [...players]
+      .filter(p => p.active && !p.isBot && p.layer != null)
+      .sort((a, b) => (a.layer ?? 999) - (b.layer ?? 999));
+    const nearestToSun = sortedByLayer.length > 0 ? {
+      id: sortedByLayer[0].id,
+      name: prettyName(sortedByLayer[0].id),
+      layer: sortedByLayer[0].layer ?? 0,
+      country: sortedByLayer[0].meta?.country || null
+    } : null;
+    
+    victoryStats = { podium, mostBadHits, mostLayerMoves, nearestToSun };
+  }
+
+  function startNewGame() {
+    showVictoryScreen = false;
+    const t = Date.now();
+    difficulty = 1;
+    difficultyLastAutoIncreaseAt = t;
+    pauseAccumAtDiffStart = pauseAccumulatedMs;
+    gameSessionStartTime = t;
+    // Reset game time system
+    lastRealTime = t;
+    gameTimeAccumulator = t;
+    // Reset game speed to normal
+    gameSpeedMultiplier = 1;
+    try { flowCache.clear(); } catch {}
+    try { scoredFlows.clear(); } catch {}
+    try { flowsToRemove.clear(); } catch {}
+    console.log('[Session] New game started');
+  }
+
   onMount(() => {
     if (!browser) return;
     canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
@@ -1167,6 +1250,9 @@
   let unsubFlows: () => void = () => {};
   let presenceInterval: any;
     const init = async () => {
+  // Clean up stale bots from previous sessions before joining
+  await cleanupStaleBots();
+  
   const joined = await joinGame(() => {});
   myPlayer = joined as any;
   if (myPlayer) {
@@ -1289,10 +1375,14 @@
     init();
 
     // Set game start time
-    gameStartTime = Date.now();
-    gameSessionStartTime = gameStartTime;
-    difficultyLastAutoIncreaseAt = gameStartTime;
+    const initTime = Date.now();
+    gameStartTime = initTime;
+    gameSessionStartTime = initTime;
+    difficultyLastAutoIncreaseAt = initTime;
     pauseAccumAtDiffStart = pauseAccumulatedMs;
+    // Initialize game time system
+    lastRealTime = initTime;
+    gameTimeAccumulator = initTime;
     // Initialize lastKnownAngles for all players at start
     players.forEach((pl) => {
       if (pl && pl.id) lastKnownAngles.set(pl.id, pl.angle);
@@ -1434,25 +1524,37 @@
 
     function loop() {
       if (isIdle) return; // stop rendering & DB sync when idle
+      if (showVictoryScreen) {
+        // Pause game loop but continue rendering canvas
+        raf = requestAnimationFrame(loop);
+        return;
+      }
       if (!ctx || !canvas) return;
       
       // Get current time at the start of the loop
-      const now = Date.now();
+      const realNow = Date.now();
+      
+      // Calculate game time with speed multiplier applied
+      if (lastRealTime === 0) lastRealTime = realNow;
+      const realDelta = realNow - lastRealTime;
+      gameTimeAccumulator += realDelta * gameSpeedMultiplier;
+      lastRealTime = realNow;
+      const now = gameTimeAccumulator; // Use accelerated game time for all calculations
       
       // Track FPS - count frames and update display values every second
       frameCount++;
-      const frameDelta = now - lastFrameTime;
-      lastFrameTime = now;
+      const frameDelta = realNow - lastFrameTime;
+      lastFrameTime = realNow;
       
-      // Update FPS display once per second
-      if (now - lastFpsUpdateTime >= 1000) {
-        const elapsed = (now - lastFpsUpdateTime) / 1000;
+      // Update FPS display once per second (use real time for FPS calculation)
+      if (realNow - lastFpsUpdateTime >= 1000) {
+        const elapsed = (realNow - lastFpsUpdateTime) / 1000;
         currentFps = Math.round(frameCount / elapsed);
         fpsHistory.push(currentFps);
         if (fpsHistory.length > 60) fpsHistory.shift(); // Keep last 60 seconds
         averageFps = Math.round(fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length);
         frameCount = 0;
-        lastFpsUpdateTime = now;
+        lastFpsUpdateTime = realNow;
       }
       
       // Calculate allowed layer range
@@ -1527,19 +1629,14 @@
       }
 
       // Session rollover at difficulty 10 after its countdown completes (account for pause)
-      if (difficulty === 10) {
+      if (difficulty === 10 && !showVictoryScreen) {
         const pausedSinceDiffStart = pauseAccumulatedMs - pauseAccumAtDiffStart;
         const effectiveElapsed = Math.max(0, (now - difficultyLastAutoIncreaseAt) - pausedSinceDiffStart);
         if (effectiveElapsed >= DIFFICULTY_INTERVAL_MS) {
-          const t = now;
-          difficulty = 1;
-          difficultyLastAutoIncreaseAt = t;
-          pauseAccumAtDiffStart = pauseAccumulatedMs;
-          gameSessionStartTime = t;
-          try { flowCache.clear(); } catch {}
-          try { scoredFlows.clear(); } catch {}
-          try { flowsToRemove.clear(); } catch {}
-          console.log('[Session] New session started');
+          // Calculate victory stats and show victory screen
+          calculateVictoryStats();
+          showVictoryScreen = true;
+          console.log('[Victory] Game completed! Showing victory screen');
         }
       }
       // Reflect keyboard state on mobile control visual pressed states
@@ -1959,7 +2056,26 @@
         const margin = 12;
         const panelPadding = 8;
         const panelW = slotCount * dotSize + (slotCount - 1) * gap + panelPadding * 2;
-        const panelH = dotSize + panelPadding * 2 + 14; // extra for label
+        
+        // Count different player types
+        let regularPlayers = 0;
+        let botPlayerCount = 0;
+        let coopPlayers = 0;
+        players.forEach(p => {
+          if (p?.colorIndex != null && p.active) {
+            if (p.isBot) botPlayerCount++;
+            else if (p.isLocalCoop) coopPlayers++;
+            else regularPlayers++;
+          }
+        });
+        // Don't add from botPlayers Map - they're already in the players array
+        // Add Player 2 if active (only if not already counted in players array)
+        if (player2Active && player2ColorIndex != null && !players.some(p => p.isLocalCoop && p.colorIndex === player2ColorIndex)) {
+          coopPlayers++;
+        }
+        
+        const labelHeight = 28; // Height for the text area above dots
+        const panelH = labelHeight + dotSize + panelPadding * 2;
         const panelX = canvas.width - panelW - margin;
         const panelY = margin;
         // Panel background
@@ -1970,13 +2086,27 @@
         ctx.strokeStyle = '#333';
         ctx.lineWidth = 1;
         ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelW - 1, panelH - 1);
-        // Label
-        ctx.font = '12px Arial';
+        // Label - first line (centered in label area)
+        ctx.font = 'bold 11px Arial';
         ctx.fillStyle = '#ccc';
+        ctx.textAlign = 'center';
         const activeSlots = activeUsedColorsAll.size;
-        ctx.fillText(`Slots ${activeSlots}/${slotCount}`, panelX + panelPadding, panelY + 14);
+        const textStartY = panelY + (labelHeight - 12) / 2; // Center the two lines
+        const textCenterX = panelX + panelW / 2;
+        ctx.fillText(`Slots ${activeSlots}/${slotCount}`, textCenterX, textStartY + 10);
+        // Label - second line (breakdown)
+        ctx.font = '10px Arial';
+        ctx.fillStyle = '#999';
+        let breakdown = [];
+        if (regularPlayers > 0) breakdown.push(`${regularPlayers} player${regularPlayers > 1 ? 's' : ''}`);
+        if (botPlayerCount > 0) breakdown.push(`${botPlayerCount} bot${botPlayerCount > 1 ? 's' : ''}`);
+        if (coopPlayers > 0) breakdown.push(`${coopPlayers} co-op`);
+        if (breakdown.length > 0) {
+          ctx.fillText(breakdown.join(', '), textCenterX, textStartY + 22);
+        }
+        ctx.textAlign = 'left'; // Reset to default
         // Dots row
-        const dotsY = panelY + panelPadding + 14;
+        const dotsY = panelY + labelHeight + panelPadding;
         for (let i = 0; i < slotCount; i++) {
           const x = panelX + panelPadding + i * (dotSize + gap);
           const isTaken = activeUsedColorsAll.has(i);
@@ -2165,6 +2295,14 @@
     <div style="font-size:12px; opacity:.7; margin-top:4px;">
   Base {baseFlowDuration}ms → Effective {Math.round(currentFlowDuration())}ms · Avg {currentAvgSpeedPxPerSec().toFixed(1)} px/s
       <br />Cache: {Array.from(flowCache.keys()).length} flows retained
+    </div>
+  </div>
+
+  <div style="margin-top: 12px;">
+    <label for="gameSpeedSlider">Game Speed: {gameSpeedMultiplier.toFixed(1)}×</label>
+    <input id="gameSpeedSlider" type="range" min="1" max="5" step="0.2" bind:value={gameSpeedMultiplier} style="width: 100%; margin-top: 8px;" />
+    <div style="font-size:12px; opacity:.7; margin-top:4px;">
+      Speeds up all game animations (flows, players, etc.)
     </div>
   </div>
 
@@ -2581,6 +2719,132 @@
       on:pointercancel={() => { mobileP2RightPressed = false; }}
       style={`background:${mobileP2RightPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2RightPressed?'#aad':'#557'}; border-radius:8px; width:50px; height:50px; font-size:20px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2RightPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2RightPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
   ➡️
+    </button>
+  </div>
+</div>
+{/if}
+
+<!-- Victory Screen -->
+{#if showVictoryScreen}
+<div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 100; display: flex; align-items: center; justify-content: center; overflow-y: auto;">
+  <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #fff; padding: 40px; border-radius: 20px; box-shadow: 0 8px 40px rgba(0,0,0,0.7); text-align: center; max-width: 700px; width: 90%;">
+    <h1 style="margin: 0 0 10px 0; font-size: 48px; color: #ffd700; text-shadow: 0 0 20px rgba(255,215,0,0.5);">🎉 Victory! 🎉</h1>
+    <p style="margin: 0 0 40px 0; font-size: 18px; color: #aaa;">Game completed at difficulty 10!</p>
+    
+    <!-- Podium (Top 3) -->
+    <div style="margin-bottom: 50px;">
+      <h2 style="margin: 0 0 25px 0; font-size: 28px; color: #fff; border-bottom: 2px solid #ffd700; padding-bottom: 10px;">🏆 Podium</h2>
+      {#if victoryStats.podium.length > 0}
+        <div style="display: flex; justify-content: center; align-items: flex-end; gap: 20px; margin-bottom: 20px;">
+          <!-- 2nd Place (Left) -->
+          {#if victoryStats.podium.length >= 2}
+            {@const p = victoryStats.podium[1]}
+            {@const FlagComp = getFlagComponent(p.country)}
+            <div style="flex: 1; max-width: 180px;">
+              <div style="background: linear-gradient(135deg, #c0c0c0, #888); border-radius: 10px; padding: 20px 15px; margin-bottom: 10px; box-shadow: 0 4px 15px rgba(192,192,192,0.3);">
+                <div style="font-size: 36px; margin-bottom: 5px;">🥈</div>
+                <div style="font-size: 14px; font-weight: bold; margin-bottom: 5px; display: flex; align-items: center; justify-content: center; gap: 5px;">
+                  {#if FlagComp}<svelte:component this={FlagComp} width="16" />{/if}
+                  {p.name}
+                </div>
+                <div style="font-size: 24px; font-weight: bold; color: #000;">{p.score} pts</div>
+              </div>
+              <div style="background: #666; height: 80px; border-radius: 5px 5px 0 0;"></div>
+            </div>
+          {/if}
+          
+          <!-- 1st Place (Center, Tallest) -->
+          {#if victoryStats.podium.length >= 1}
+            {@const p = victoryStats.podium[0]}
+            {@const FlagComp = getFlagComponent(p.country)}
+            <div style="flex: 1; max-width: 200px;">
+              <div style="background: linear-gradient(135deg, #ffd700, #ffed4e); border-radius: 10px; padding: 25px 15px; margin-bottom: 10px; box-shadow: 0 6px 20px rgba(255,215,0,0.5);">
+                <div style="font-size: 48px; margin-bottom: 5px;">👑</div>
+                <div style="font-size: 16px; font-weight: bold; margin-bottom: 5px; display: flex; align-items: center; justify-content: center; gap: 5px; color: #000;">
+                  {#if FlagComp}<svelte:component this={FlagComp} width="18" />{/if}
+                  {p.name}
+                </div>
+                <div style="font-size: 32px; font-weight: bold; color: #000;">{p.score} pts</div>
+              </div>
+              <div style="background: #ffd700; height: 120px; border-radius: 5px 5px 0 0;"></div>
+            </div>
+          {/if}
+          
+          <!-- 3rd Place (Right) -->
+          {#if victoryStats.podium.length >= 3}
+            {@const p = victoryStats.podium[2]}
+            {@const FlagComp = getFlagComponent(p.country)}
+            <div style="flex: 1; max-width: 180px;">
+              <div style="background: linear-gradient(135deg, #cd7f32, #965a38); border-radius: 10px; padding: 20px 15px; margin-bottom: 10px; box-shadow: 0 4px 15px rgba(205,127,50,0.3);">
+                <div style="font-size: 36px; margin-bottom: 5px;">🥉</div>
+                <div style="font-size: 14px; font-weight: bold; margin-bottom: 5px; display: flex; align-items: center; justify-content: center; gap: 5px;">
+                  {#if FlagComp}<svelte:component this={FlagComp} width="16" />{/if}
+                  {p.name}
+                </div>
+                <div style="font-size: 24px; font-weight: bold; color: #000;">{p.score} pts</div>
+              </div>
+              <div style="background: #cd7f32; height: 60px; border-radius: 5px 5px 0 0;"></div>
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <p style="color: #888; font-style: italic;">No players to display</p>
+      {/if}
+    </div>
+    
+    <!-- Accolades (Awards) -->
+    <div style="margin-bottom: 40px;">
+      <h2 style="margin: 0 0 20px 0; font-size: 24px; color: #fff; border-bottom: 2px solid #4a9eff; padding-bottom: 10px;">🏅 Special Awards</h2>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+        <!-- Most Bad Hits -->
+        {#if victoryStats.mostBadHits}
+          {@const FlagComp = getFlagComponent(victoryStats.mostBadHits.country)}
+          <div style="background: rgba(255,50,50,0.2); border: 2px solid #ff3232; border-radius: 10px; padding: 15px;">
+            <div style="font-size: 28px; margin-bottom: 5px;">💥</div>
+            <div style="font-size: 12px; color: #ff8888; text-transform: uppercase; margin-bottom: 5px;">Most Bad Hits</div>
+            <div style="font-size: 14px; font-weight: bold; margin-bottom: 3px; display: flex; align-items: center; justify-content: center; gap: 5px;">
+              {#if FlagComp}<svelte:component this={FlagComp} width="14" />{/if}
+              {victoryStats.mostBadHits.name}
+            </div>
+            <div style="font-size: 18px; color: #ff3232;">{victoryStats.mostBadHits.hits} hits</div>
+          </div>
+        {/if}
+        
+        <!-- Most Layer Moves -->
+        {#if victoryStats.mostLayerMoves}
+          {@const FlagComp = getFlagComponent(victoryStats.mostLayerMoves.country)}
+          <div style="background: rgba(74,158,255,0.2); border: 2px solid #4a9eff; border-radius: 10px; padding: 15px;">
+            <div style="font-size: 28px; margin-bottom: 5px;">⚡</div>
+            <div style="font-size: 12px; color: #88c8ff; text-transform: uppercase; margin-bottom: 5px;">Most Active</div>
+            <div style="font-size: 14px; font-weight: bold; margin-bottom: 3px; display: flex; align-items: center; justify-content: center; gap: 5px;">
+              {#if FlagComp}<svelte:component this={FlagComp} width="14" />{/if}
+              {victoryStats.mostLayerMoves.name}
+            </div>
+            <div style="font-size: 18px; color: #4a9eff;">{victoryStats.mostLayerMoves.moves} boost</div>
+          </div>
+        {/if}
+        
+        <!-- Nearest to Sun -->
+        {#if victoryStats.nearestToSun}
+          {@const FlagComp = getFlagComponent(victoryStats.nearestToSun.country)}
+          <div style="background: rgba(255,165,0,0.2); border: 2px solid #ffa500; border-radius: 10px; padding: 15px;">
+            <div style="font-size: 28px; margin-bottom: 5px;">☀️</div>
+            <div style="font-size: 12px; color: #ffcc88; text-transform: uppercase; margin-bottom: 5px;">Nearest to Sun</div>
+            <div style="font-size: 14px; font-weight: bold; margin-bottom: 3px; display: flex; align-items: center; justify-content: center; gap: 5px;">
+              {#if FlagComp}<svelte:component this={FlagComp} width="14" />{/if}
+              {victoryStats.nearestToSun.name}
+            </div>
+            <div style="font-size: 18px; color: #ffa500;">Layer {victoryStats.nearestToSun.layer}</div>
+          </div>
+        {/if}
+      </div>
+    </div>
+    
+    <!-- Start New Game Button -->
+    <button 
+      on:click={startNewGame}
+      style="background: linear-gradient(135deg, #4CAF50, #45a049); color: #fff; border: none; border-radius: 10px; padding: 18px 40px; font-size: 20px; font-weight: bold; cursor: pointer; transition: all 0.3s; box-shadow: 0 4px 15px rgba(76,175,80,0.4);">
+      🎮 Start New Game
     </button>
   </div>
 </div>

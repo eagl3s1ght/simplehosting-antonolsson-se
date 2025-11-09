@@ -604,3 +604,48 @@ export async function cleanupInactivePlayers(inactiveThresholdMs = 300000) {
     return { removed: 0, archived: 0 };
   }
 }
+
+/**
+ * Remove all bot and local co-op players from the game
+ * Called on game initialization to clean up stale bots from previous sessions
+ */
+export async function cleanupStaleBots() {
+  try {
+    const playersRef = ref(db, `${ROOM}/players`);
+    const snap = await get(playersRef);
+    
+    if (!snap.exists()) {
+      return 0;
+    }
+    
+    const toRemove = [];
+    
+    snap.forEach((child) => {
+      const player = child.val();
+      
+      // Remove bot players and local co-op players
+      if (player?.isBot || player?.isLocalCoop) {
+        toRemove.push(child.key);
+      }
+      // Also remove by ID pattern (in case flag is missing)
+      else if (child.key.startsWith('bot-') || child.key.startsWith('local-p2-')) {
+        toRemove.push(child.key);
+      }
+    });
+    
+    // Remove all stale bots
+    for (const playerId of toRemove) {
+      await set(ref(db, `${ROOM}/players/${playerId}`), null);
+    }
+    
+    if (toRemove.length > 0) {
+      console.log(`[Cleanup] Removed ${toRemove.length} stale bots/co-op players`);
+    }
+    
+    return toRemove.length;
+    
+  } catch (e) {
+    console.error('cleanupStaleBots error:', e);
+    return 0;
+  }
+}
