@@ -198,6 +198,8 @@
   // Auto-spawn bot on join (persisted)
   let autoSpawnBotOnJoin = false;
   let isIdle = false; // set to true once we go idle and stop DB activity
+  // Mobile emulation (debug toggle)
+  let emulateMobileTouch = false;
   let lastMovementTime = Date.now();
   let idleRemainingMs = IDLE_TIMEOUT_MS;
 
@@ -391,7 +393,7 @@
     if (typeof navigator === 'undefined') return false;
     // PC utan touch = numpad stöd
     // Mobil med touch = on-screen controls
-    const hasTouch = navigator.maxTouchPoints > 0;
+    const hasTouch = emulateMobileTouch || navigator.maxTouchPoints > 0;
     const isMobile = hasTouch && window.innerWidth < 768;
     localCoopSupported = true; // Stöd både PC och mobil
     return true;
@@ -2413,6 +2415,20 @@
       </div>
     {/if}
   </div>
+  
+  <div style="margin-top:12px; font-size:13px; line-height:1.4; background:#1a1a1a; padding:8px 10px; border-radius:6px;">
+    <b>Mobile Emulation</b>
+    <br />
+    <label style="display:flex; align-items:center; gap:6px; margin-top:4px; font-size:12px;">
+      <input type="checkbox" bind:checked={emulateMobileTouch} on:change={() => {
+        checkLocalCoopSupport();
+        console.log('[Mobile Emulation]', emulateMobileTouch ? 'ENABLED' : 'DISABLED');
+      }} /> Emulate mobile touch device
+    </label>
+    <div style="margin-top:4px; font-size:11px; opacity:.65;">
+      Makes desktop environment show mobile on-screen controls for Player 1 & 2. Useful for testing local co-op mobile controls without a touch device.
+    </div>
+  </div>
   </div>
 </div>
 {/if}
@@ -2470,6 +2486,7 @@
 {/if}
 
 <!-- Mobile Controls (bottom-center) -->
+{#if emulateMobileTouch || navigator.maxTouchPoints > 0}
 <div style="position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px;">
   <!-- Up button -->
   <button
@@ -2516,10 +2533,11 @@
     </button>
   </div>
 </div>
+{/if}
 
 <!-- Player 2 Mobile Controls (only show on touch devices when local coop is active) -->
-{#if localCoopEnabled && player2Active && navigator.maxTouchPoints > 0}
-<div style="position: absolute; bottom: 10px; right: 20px; z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px; opacity: 0.8;">
+{#if localCoopEnabled && player2Active && (emulateMobileTouch || navigator.maxTouchPoints > 0)}
+<div style="position: absolute; top: 10px; left: 50%; transform: translateX(-50%) rotate(180deg); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px; opacity: 0.8;">
   <div style="font-size: 12px; color: #fff; text-align: center; margin-bottom: 4px;">P2</div>
   <!-- Up button -->
   <button

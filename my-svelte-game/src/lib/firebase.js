@@ -553,6 +553,11 @@ export async function cleanupInactivePlayers(inactiveThresholdMs = 300000) {
       const player = child.val();
       const lastSeen = player?.lastSeen;
       
+      // Skip bot players and local co-op players
+      if (player?.isBot || player?.isLocalCoop) {
+        return;
+      }
+      
       // Only process players with lastSeen timestamp
       if (typeof lastSeen === 'number') {
         const timeSinceLastSeen = now - lastSeen;
