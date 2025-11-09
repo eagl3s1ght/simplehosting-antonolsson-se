@@ -741,6 +741,20 @@
           // Normal flow increases score AND speed boost
           incrementScore(myPlayer.playerId);
           mySpeedBoost++; // +1% additive per catch
+          
+          // Track score increase in PostHog
+          if (typeof window !== 'undefined' && window.posthog) {
+            const currentPlayer = players.find(p => p.id === myPlayer.playerId);
+            const newScore = (currentPlayer?.score || 0) + 1; // Score will be incremented
+            window.posthog.capture('score_increased', {
+              player_id: myPlayer.playerId,
+              new_score: newScore,
+              speed_boost: mySpeedBoost,
+              layer: myLayer,
+              color_index: myColorIndex
+            });
+          }
+          
           // Update lifetime highscore (catches)
           recordCatch(
             myPlayer.playerId,
