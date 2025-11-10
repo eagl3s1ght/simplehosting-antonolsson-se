@@ -201,7 +201,7 @@
   let youtubePlayer: any = null;
   let isYouTubeReady = false;
   let musicVolume = 15; // Default volume 0-100
-  let currentMusicIndex = 0; // 0 = lofi, 1 = chillstep
+  let currentMusicIndex = 1; // 0 = lofi, 1 = chillstep (default to chillstep)
   const musicTracks = [
     { id: 'HuFYqnbVbzY', name: 'Lofi Hip Hop Radio' },
     { id: 'cWuzJBboQyE', name: 'Chillstep Radio' }
@@ -2874,28 +2874,27 @@
 
 <!-- REMOVED: MigrationButton - migration complete, now using Firestore -->
 
-<!-- Menu Button (always visible top-left) -->
-<div style="position: absolute; top: 10px; left: 10px; z-index: 10;">
+<!-- Menu Button and Music Controls (always visible top-left) -->
+<div style="position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; align-items: center; gap: 10px;">
   <button on:click|stopPropagation={openContextMenu} style="background:#2a4a2a; color:#fff; border:none; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:16px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
     ☰ Menu
   </button>
-</div>
-
-<!-- Music Control Button (top-left, below menu) -->
-{#if youtubePlayer}
-<div style="position: absolute; top: 60px; left: 10px; z-index: 10; display: flex; flex-direction: column; gap: 4px;">
-  <button 
-    on:click|stopPropagation={toggleBackgroundMusic}
-    style="background:#1a1a2a; color:#fff; border:1px solid #3a3a5a; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:20px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); line-height: 1;"
-    title={isMusicPlaying ? 'Pause Music' : 'Play Music'}
-  >
-    {isMusicPlaying ? '⏸️' : '▶️'}
-  </button>
-  <div style="font-size: 10px; color: #aaa; text-align: center; background: rgba(0,0,0,0.5); padding: 2px 4px; border-radius: 4px;">
-    {musicTracks[currentMusicIndex].name}
+  
+  {#if youtubePlayer}
+  <div style="display: flex; align-items: center; gap: 8px;">
+    <button 
+      on:click|stopPropagation={toggleBackgroundMusic}
+      style="background:#1a1a2a; color:#fff; border:1px solid #3a3a5a; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:20px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); line-height: 1;"
+      title={isMusicPlaying ? 'Pause Music' : 'Play Music'}
+    >
+      {isMusicPlaying ? '⏸️' : '▶️'}
+    </button>
+    <div style="font-size: 12px; color: #aaa; background: rgba(0,0,0,0.5); padding: 6px 10px; border-radius: 4px;">
+      Playing: {musicTracks[currentMusicIndex].name}
+    </div>
   </div>
+  {/if}
 </div>
-{/if}
 
 {#if dev}
 <div style="position: absolute; top: 10px; right: 10px; z-index: 10;">

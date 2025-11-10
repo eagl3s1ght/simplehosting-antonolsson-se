@@ -17,8 +17,7 @@
 		
 		%sveltekit.head%
 	</head>
-	<body data-sveltekit-preload-data="hover">
-		<h1>Beep Boop!</h1>
+	<body data-sveltekit-preload-data="hover" style="margin: 0; padding: 0; overflow: hidden; width: 100vw; height: 100vh;">
 		<ErrorBoundary let:error={err}>
 			<div style="display: contents">%sveltekit.body%</div>
 		</ErrorBoundary>
