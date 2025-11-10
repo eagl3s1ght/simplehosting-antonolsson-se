@@ -1677,25 +1677,24 @@
     const updateCanvasSize = () => {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
+      // Regenerate stars to match new canvas size
+      stars = [];
+      for (let i = 0; i < STAR_COUNT; i++) {
+        stars.push({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height,
+          size: Math.random() * 1.5 + 0.5,
+          opacity: Math.random() * 0.5 + 0.3,
+          twinkleSpeed: Math.random() * 0.02 + 0.005,
+          twinklePhase: Math.random() * Math.PI * 2
+        });
+      }
     };
     updateCanvasSize();
     window.addEventListener('resize', updateCanvasSize);
     
     // Check local co-op support
     checkLocalCoopSupport();
-    
-    // Initialize starfield using canvas dimensions
-    stars = [];
-    for (let i = 0; i < STAR_COUNT; i++) {
-      stars.push({
-        x: Math.random() * canvas.width,
-        y: Math.random() * canvas.height,
-        size: Math.random() * 1.5 + 0.5, // 0.5 to 2 pixels
-        opacity: Math.random() * 0.5 + 0.3, // 0.3 to 0.8
-        twinkleSpeed: Math.random() * 0.02 + 0.005, // Slow twinkle
-        twinklePhase: Math.random() * Math.PI * 2 // Random starting phase
-      });
-    }
     
     // Fade out splash screen after 3 seconds
     setTimeout(() => {
@@ -2354,17 +2353,41 @@
           
           // VIP Black Stars effect - draw stars on nest
           if (isMyNest && vipBlackStars) {
-            ctx.globalAlpha = 0.6;
             const numStars = 12;
+            const arcLength = nestEndAngle - nestStartAngle;
+            
             for (let i = 0; i < numStars; i++) {
-              const starAngle = nestStartAngle + (nestEndAngle - nestStartAngle) * (i / numStars);
-              const starX = gameCenterX + Math.cos(starAngle) * outermostRadius;
-              const starY = gameCenterY + Math.sin(starAngle) * outermostRadius;
-              const starSize = 1.5 * scaleFactor;
+              // Use player ID to seed pseudo-random but consistent positions
+              const seed = (myPlayer?.playerId.charCodeAt(i % (myPlayer?.playerId.length || 1)) || 0) + i + 100; // +100 to differentiate from fragment stars
+              const randomOffset = (Math.sin(seed) * 0.5 + 0.5); // 0 to 1
+              const randomSize = (Math.cos(seed * 1.3) * 0.5 + 0.5); // 0 to 1
+              const randomRotation = Math.sin(seed * 2.1) * Math.PI;
               
-              // Draw a small white star
+              // Vary position along the arc (with some randomness)
+              const positionRatio = (i / (numStars - 1)) * 0.9 + randomOffset * 0.1;
+              const starAngle = nestStartAngle + arcLength * positionRatio;
+              
+              // Add slight radius variation (stars slightly in/out from nest arc)
+              const radiusOffset = (Math.sin(seed * 1.7) - 0.5) * 8 * scaleFactor;
+              const starRadius = outermostRadius + radiusOffset;
+              
+              const starX = gameCenterX + Math.cos(starAngle) * starRadius;
+              const starY = gameCenterY + Math.sin(starAngle) * starRadius;
+              
+              // Vary star size
+              const baseSize = 1.5 * scaleFactor;
+              const starSize = baseSize + randomSize * baseSize * 0.8;
+              
+              // Twinkle effect based on time
+              const twinkleSpeed = 0.002 + randomOffset * 0.003;
+              const twinklePhase = seed + now * twinkleSpeed;
+              const twinkle = Math.sin(twinklePhase) * 0.3 + 0.7; // 0.4 to 1.0
+              
+              // Draw a small white star with varied opacity
               ctx.save();
               ctx.translate(starX, starY);
+              ctx.rotate(randomRotation);
+              ctx.globalAlpha = twinkle;
               ctx.fillStyle = '#ffffff';
               ctx.beginPath();
               for (let j = 0; j < 5; j++) {
@@ -2378,6 +2401,7 @@
               ctx.fill();
               ctx.restore();
             }
+            ctx.globalAlpha = 1.0; // Reset opacity after stars
           }
           
           // Draw collision border at 0.8 opacity if active (outer edge)
