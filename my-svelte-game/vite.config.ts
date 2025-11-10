@@ -31,7 +31,12 @@ export default defineConfig({
 				console.error('\x1b[31m%s\x1b[0m', '[vite]', warning);
 				warn(warning);
 			}
-		}
+		},
+		minify: 'esbuild',
+		target: 'esnext'
+	},
+	esbuild: {
+		drop: process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : []
 	},
 	test: {
 		expect: { requireAssertions: true },
