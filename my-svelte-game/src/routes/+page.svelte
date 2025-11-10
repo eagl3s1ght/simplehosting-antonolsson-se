@@ -2272,13 +2272,64 @@
           }
           
           // Draw main nest arc with low opacity (0.2) - nest background
-          ctx.globalAlpha = 0.2;
-          ctx.strokeStyle = nestColor;
-          ctx.lineWidth = 25 * scaleFactor;
-          ctx.lineCap = 'butt'; // Square caps so nests connect seamlessly
-          ctx.beginPath();
-          ctx.arc(gameCenterX, gameCenterY, outermostRadius, nestStartAngle, nestEndAngle);
-          ctx.stroke();
+          if (isMyNest && vipGolden) {
+            // Golden shimmer effect for nest
+            ctx.globalAlpha = 0.3;
+            const shimmerProgress = (now % 2500) / 2500; // 2.5 second cycle
+            
+            // Calculate gradient for arc shimmer
+            const midAngle = (nestStartAngle + nestEndAngle) / 2;
+            const perpAngle = midAngle + Math.PI / 2;
+            const gradientLength = outermostRadius * 0.5;
+            const arcMidX = gameCenterX + Math.cos(midAngle) * outermostRadius;
+            const arcMidY = gameCenterY + Math.sin(midAngle) * outermostRadius;
+            const gradientOffset = (shimmerProgress - 0.5) * outermostRadius * 2;
+            const grad1X = arcMidX + Math.cos(perpAngle) * gradientLength + Math.cos(midAngle) * gradientOffset;
+            const grad1Y = arcMidY + Math.sin(perpAngle) * gradientLength + Math.sin(midAngle) * gradientOffset;
+            const grad2X = arcMidX - Math.cos(perpAngle) * gradientLength + Math.cos(midAngle) * gradientOffset;
+            const grad2Y = arcMidY - Math.sin(perpAngle) * gradientLength + Math.sin(midAngle) * gradientOffset;
+            
+            const gradient = ctx.createLinearGradient(grad1X, grad1Y, grad2X, grad2Y);
+            gradient.addColorStop(0, '#B8860B');
+            gradient.addColorStop(0.3, '#DAA520');
+            gradient.addColorStop(0.5, '#FFFACD');
+            gradient.addColorStop(0.7, '#DAA520');
+            gradient.addColorStop(1, '#B8860B');
+            
+            ctx.strokeStyle = gradient;
+            ctx.lineWidth = 25 * scaleFactor;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.arc(gameCenterX, gameCenterY, outermostRadius, nestStartAngle, nestEndAngle);
+            ctx.stroke();
+            
+            // Bright shine overlay
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalAlpha = 0.15;
+            const shineGrad = ctx.createLinearGradient(grad1X, grad1Y, grad2X, grad2Y);
+            shineGrad.addColorStop(0, 'transparent');
+            shineGrad.addColorStop(0.45, 'transparent');
+            shineGrad.addColorStop(0.5, '#FFFFFF');
+            shineGrad.addColorStop(0.55, 'transparent');
+            shineGrad.addColorStop(1, 'transparent');
+            ctx.strokeStyle = shineGrad;
+            ctx.lineWidth = 25 * scaleFactor;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.arc(gameCenterX, gameCenterY, outermostRadius, nestStartAngle, nestEndAngle);
+            ctx.stroke();
+            ctx.restore();
+          } else {
+            // Normal nest rendering
+            ctx.globalAlpha = 0.2;
+            ctx.strokeStyle = nestColor;
+            ctx.lineWidth = 25 * scaleFactor;
+            ctx.lineCap = 'butt';
+            ctx.beginPath();
+            ctx.arc(gameCenterX, gameCenterY, outermostRadius, nestStartAngle, nestEndAngle);
+            ctx.stroke();
+          }
           
           // VIP Black Stars effect - draw stars on nest
           if (isMyNest && vipBlackStars) {
@@ -2310,13 +2361,43 @@
           
           // Draw collision border at 0.8 opacity if active (outer edge)
           if (isActive) {
-            ctx.globalAlpha = 0.8;
-            ctx.strokeStyle = nestColor;
-            ctx.lineWidth = 4 * scaleFactor;
-            ctx.lineCap = 'butt';
-            ctx.beginPath();
-            ctx.arc(gameCenterX, gameCenterY, outermostRadius + 12.5 * scaleFactor, nestStartAngle, nestEndAngle);
-            ctx.stroke();
+            if (isMyNest && vipGolden) {
+              // Golden shimmer border
+              ctx.globalAlpha = 0.9;
+              const shimmerProgress = (now % 2500) / 2500;
+              const midAngle = (nestStartAngle + nestEndAngle) / 2;
+              const borderRadius = outermostRadius + 12.5 * scaleFactor;
+              const perpAngle = midAngle + Math.PI / 2;
+              const gradientLength = borderRadius * 0.5;
+              const arcMidX = gameCenterX + Math.cos(midAngle) * borderRadius;
+              const arcMidY = gameCenterY + Math.sin(midAngle) * borderRadius;
+              const gradientOffset = (shimmerProgress - 0.5) * borderRadius * 2;
+              const grad1X = arcMidX + Math.cos(perpAngle) * gradientLength + Math.cos(midAngle) * gradientOffset;
+              const grad1Y = arcMidY + Math.sin(perpAngle) * gradientLength + Math.sin(midAngle) * gradientOffset;
+              const grad2X = arcMidX - Math.cos(perpAngle) * gradientLength + Math.cos(midAngle) * gradientOffset;
+              const grad2Y = arcMidY - Math.sin(perpAngle) * gradientLength + Math.sin(midAngle) * gradientOffset;
+              
+              const borderGradient = ctx.createLinearGradient(grad1X, grad1Y, grad2X, grad2Y);
+              borderGradient.addColorStop(0, '#DAA520');
+              borderGradient.addColorStop(0.5, '#FFFACD');
+              borderGradient.addColorStop(1, '#DAA520');
+              
+              ctx.strokeStyle = borderGradient;
+              ctx.lineWidth = 4 * scaleFactor;
+              ctx.lineCap = 'butt';
+              ctx.beginPath();
+              ctx.arc(gameCenterX, gameCenterY, borderRadius, nestStartAngle, nestEndAngle);
+              ctx.stroke();
+            } else {
+              // Normal border
+              ctx.globalAlpha = 0.8;
+              ctx.strokeStyle = nestColor;
+              ctx.lineWidth = 4 * scaleFactor;
+              ctx.lineCap = 'butt';
+              ctx.beginPath();
+              ctx.arc(gameCenterX, gameCenterY, outermostRadius + 12.5 * scaleFactor, nestStartAngle, nestEndAngle);
+              ctx.stroke();
+            }
           }
           
           ctx.globalAlpha = 1.0; // Reset opacity
@@ -2379,28 +2460,117 @@
         }
         
         // Main player fragment
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 25 * scaleFactor;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-    const angle = isMyPlayer ? myAngle : p.angle;
+        const angle = isMyPlayer ? myAngle : p.angle;
         const startA = normalizeAngle(angle - PIPE_WIDTH / 2);
         const endA = normalizeAngle(angle + PIPE_WIDTH / 2);
-    ctx.arc(gameCenterX, gameCenterY, layerRadius, startA, endA);
-        ctx.stroke();
+        
+        // VIP Golden shimmer effect
+        if (isMyPlayer && vipGolden) {
+          // Create animated shimmer gradient
+          const shimmerProgress = (now % 2500) / 2500; // 2.5 second cycle
+          
+          // Calculate arc start and end points in cartesian coordinates
+          const startX = gameCenterX + Math.cos(startA) * layerRadius;
+          const startY = gameCenterY + Math.sin(startA) * layerRadius;
+          const endX = gameCenterX + Math.cos(endA) * layerRadius;
+          const endY = gameCenterY + Math.sin(endA) * layerRadius;
+          
+          // Calculate perpendicular vector for gradient direction
+          const midAngle = (startA + endA) / 2;
+          const perpAngle = midAngle + Math.PI / 2;
+          const gradientLength = layerRadius * 0.5;
+          
+          // Animate gradient position along the arc
+          const arcMidX = gameCenterX + Math.cos(midAngle) * layerRadius;
+          const arcMidY = gameCenterY + Math.sin(midAngle) * layerRadius;
+          
+          // Move gradient from left to right across the arc
+          const gradientOffset = (shimmerProgress - 0.5) * layerRadius * 2;
+          const grad1X = arcMidX + Math.cos(perpAngle) * gradientLength + Math.cos(midAngle) * gradientOffset;
+          const grad1Y = arcMidY + Math.sin(perpAngle) * gradientLength + Math.sin(midAngle) * gradientOffset;
+          const grad2X = arcMidX - Math.cos(perpAngle) * gradientLength + Math.cos(midAngle) * gradientOffset;
+          const grad2Y = arcMidY - Math.sin(perpAngle) * gradientLength + Math.sin(midAngle) * gradientOffset;
+          
+          const gradient = ctx.createLinearGradient(grad1X, grad1Y, grad2X, grad2Y);
+          
+          // Gold shimmer colors - darker gold -> bright highlight -> darker gold
+          gradient.addColorStop(0, '#B8860B');    // Dark goldenrod
+          gradient.addColorStop(0.3, '#DAA520');  // Goldenrod
+          gradient.addColorStop(0.5, '#FFFACD');  // Lemon chiffon (bright highlight)
+          gradient.addColorStop(0.7, '#DAA520');  // Goldenrod
+          gradient.addColorStop(1, '#B8860B');    // Dark goldenrod
+          
+          ctx.strokeStyle = gradient;
+          ctx.lineWidth = 25 * scaleFactor;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.arc(gameCenterX, gameCenterY, layerRadius, startA, endA);
+          ctx.stroke();
+          
+          // Add metallic shine overlay
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = 0.3;
+          const shineGrad = ctx.createLinearGradient(grad1X, grad1Y, grad2X, grad2Y);
+          shineGrad.addColorStop(0, 'transparent');
+          shineGrad.addColorStop(0.45, 'transparent');
+          shineGrad.addColorStop(0.5, '#FFFFFF');
+          shineGrad.addColorStop(0.55, 'transparent');
+          shineGrad.addColorStop(1, 'transparent');
+          ctx.strokeStyle = shineGrad;
+          ctx.lineWidth = 25 * scaleFactor;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.arc(gameCenterX, gameCenterY, layerRadius, startA, endA);
+          ctx.stroke();
+          ctx.restore();
+        } else {
+          // Normal rendering
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 25 * scaleFactor;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.arc(gameCenterX, gameCenterY, layerRadius, startA, endA);
+          ctx.stroke();
+        }
         
         // VIP Black Stars effect - draw stars on the fragment
         if (isMyPlayer && vipBlackStars) {
-          const numStars = 8;
+          const numStars = 12; // More stars for better coverage
+          const arcLength = endA - startA;
+          
           for (let i = 0; i < numStars; i++) {
-            const starAngle = startA + (endA - startA) * (i / (numStars - 1));
-            const starX = gameCenterX + Math.cos(starAngle) * layerRadius;
-            const starY = gameCenterY + Math.sin(starAngle) * layerRadius;
-            const starSize = 2 * scaleFactor;
+            // Use player ID to seed pseudo-random but consistent positions
+            const seed = (myPlayer?.playerId.charCodeAt(i % (myPlayer?.playerId.length || 1)) || 0) + i;
+            const randomOffset = (Math.sin(seed) * 0.5 + 0.5); // 0 to 1
+            const randomSize = (Math.cos(seed * 1.3) * 0.5 + 0.5); // 0 to 1
+            const randomRotation = Math.sin(seed * 2.1) * Math.PI;
             
-            // Draw a small white star
+            // Vary position along the arc (with some randomness)
+            const positionRatio = (i / (numStars - 1)) * 0.9 + randomOffset * 0.1;
+            const starAngle = startA + arcLength * positionRatio;
+            
+            // Add slight radius variation (stars slightly in/out from arc)
+            const radiusOffset = (Math.sin(seed * 1.7) - 0.5) * 8 * scaleFactor;
+            const starRadius = layerRadius + radiusOffset;
+            
+            const starX = gameCenterX + Math.cos(starAngle) * starRadius;
+            const starY = gameCenterY + Math.sin(starAngle) * starRadius;
+            
+            // Vary star size
+            const baseSize = 1.5 * scaleFactor;
+            const starSize = baseSize + randomSize * baseSize * 0.8;
+            
+            // Twinkle effect based on time
+            const twinkleSpeed = 0.002 + randomOffset * 0.003;
+            const twinklePhase = seed + now * twinkleSpeed;
+            const twinkle = Math.sin(twinklePhase) * 0.3 + 0.7; // 0.4 to 1.0
+            
+            // Draw a small white star with varied opacity
             ctx.save();
             ctx.translate(starX, starY);
+            ctx.rotate(randomRotation);
+            ctx.globalAlpha = twinkle;
             ctx.fillStyle = '#ffffff';
             ctx.beginPath();
             for (let j = 0; j < 5; j++) {
@@ -2414,6 +2584,7 @@
             ctx.fill();
             ctx.restore();
           }
+          ctx.globalAlpha = 1.0; // Reset opacity after stars
         }
 
         // Accent ring
