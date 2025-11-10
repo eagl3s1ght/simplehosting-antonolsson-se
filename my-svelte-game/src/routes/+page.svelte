@@ -153,6 +153,38 @@
   let mobileP2LeftPressed = false;
   let mobileP2RightPressed = false;
   
+  // Mobile shoot arc button
+  let mobileShootPressed = false;
+  let mobileP2ShootPressed = false;
+  
+  // Arc ability cooldown (5 seconds)
+  let arcCooldownP1 = 0;
+  let arcCooldownP2 = 0;
+  const ARC_COOLDOWN_MS = 5000;
+  const ARC_ANGLE_RANGE = Math.PI / 3; // 60 degrees arc in front of player
+  
+  // Reactive timestamp for cooldown display (updated in render loop)
+  let currentTime = Date.now();
+  
+  // Arc animations
+  type ArcAnimation = { 
+    playerAngle: number; 
+    playerLayer: number; 
+    startTime: number; 
+    duration: number;
+    isPlayer2: boolean;
+    destroyedFlows: Set<string>; // Track which flows this arc has already destroyed
+  };
+  let activeArcs: ArcAnimation[] = [];
+  const ARC_ANIMATION_DURATION = 500; // 500ms animation
+  
+  // Dynamic control positions (updated in render loop)
+  let mobileControlBottomDistance = 60; // Distance from bottom of viewport
+  let mobileControlTopDistance = 60; // Distance from top of viewport
+  
+  // Splash screen
+  let showSplash = true;
+  
   // Starfield background
   type Star = { x: number; y: number; size: number; opacity: number; twinkleSpeed: number; twinklePhase: number };
   let stars: Star[] = [];
@@ -495,6 +527,45 @@
     } catch (err) {
       console.error('Failed to stop local coop:', err);
     }
+  }
+
+  // Arc ability function - destroys evil flows in an arc in front of player
+  function useArcAbility(playerAngle: number, playerLayer: number, isPlayer2: boolean = false) {
+    const now = Date.now();
+    const cooldownRef = isPlayer2 ? arcCooldownP2 : arcCooldownP1;
+    
+    // Check cooldown
+    if (now - cooldownRef < ARC_COOLDOWN_MS) {
+      console.debug('[Arc] Ability on cooldown', {
+        player: isPlayer2 ? 'P2' : 'P1',
+        remainingMs: ARC_COOLDOWN_MS - (now - cooldownRef)
+      });
+      return;
+    }
+    
+    // Update cooldown
+    if (isPlayer2) {
+      arcCooldownP2 = now;
+    } else {
+      arcCooldownP1 = now;
+    }
+    
+    // Add arc animation
+    activeArcs.push({
+      playerAngle,
+      playerLayer,
+      startTime: now,
+      duration: ARC_ANIMATION_DURATION,
+      isPlayer2,
+      destroyedFlows: new Set() // Track destroyed flows to avoid duplicates
+    });
+    activeArcs = activeArcs; // Trigger reactivity
+    
+    console.log('[Arc] Ability activated', {
+      player: isPlayer2 ? 'P2' : 'P1',
+      layer: playerLayer,
+      angle: (playerAngle * 180 / Math.PI).toFixed(1) + '°'
+    });
   }
 
   // Persist debug panel state in session storage
@@ -1227,24 +1298,35 @@
     if (!browser) return;
     canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
     ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
-    canvas.width = CANVAS_SIZE;
-    canvas.height = CANVAS_SIZE;
+    
+    // Make canvas fill viewport
+    const updateCanvasSize = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    };
+    updateCanvasSize();
+    window.addEventListener('resize', updateCanvasSize);
     
     // Check local co-op support
     checkLocalCoopSupport();
     
-    // Initialize starfield
+    // Initialize starfield using canvas dimensions
     stars = [];
     for (let i = 0; i < STAR_COUNT; i++) {
       stars.push({
-        x: Math.random() * CANVAS_SIZE,
-        y: Math.random() * CANVAS_SIZE,
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
         size: Math.random() * 1.5 + 0.5, // 0.5 to 2 pixels
         opacity: Math.random() * 0.5 + 0.3, // 0.3 to 0.8
         twinkleSpeed: Math.random() * 0.02 + 0.005, // Slow twinkle
         twinklePhase: Math.random() * Math.PI * 2 // Random starting phase
       });
     }
+    
+    // Fade out splash screen after 3 seconds
+    setTimeout(() => {
+      showSplash = false;
+    }, 3000);
 
   let unsubPlayers: () => void = () => {};
   let unsubFlows: () => void = () => {};
@@ -1466,6 +1548,20 @@
     const onKey = (e: KeyboardEvent) => {
       keys[e.key] = e.type === 'keydown';
       
+      // Arc ability triggers
+      if (e.type === 'keydown' && !e.repeat) {
+        // Player 1: Spacebar
+        if (e.key === ' ' && myPlayer && myColorIndex != null) {
+          useArcAbility(myAngle, myLayer, false);
+          e.preventDefault();
+        }
+        // Player 2: Numpad 0
+        if ((e.key === '0' || e.code === 'Numpad0') && localCoopEnabled && player2Active && player2ColorIndex != null) {
+          useArcAbility(player2Angle, player2Layer, true);
+          e.preventDefault();
+        }
+      }
+      
       // Debug mode: numpad +/- to adjust layers
       if (dev && e.type === 'keydown') {
         if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') {
@@ -1533,6 +1629,7 @@
       
       // Get current time at the start of the loop
       const realNow = Date.now();
+      currentTime = realNow; // Update reactive timestamp for cooldown displays
       
       // Calculate game time with speed multiplier applied
       if (lastRealTime === 0) lastRealTime = realNow;
@@ -1731,6 +1828,29 @@
       ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       
+      // Calculate dynamic center and scale to fit game in middle 60% of viewport
+      const gameCenterX = canvas.width / 2;
+      const gameCenterY = canvas.height / 2;
+      
+      // Available space: middle 60% of height (20% margin top/bottom for controls)
+      const availableHeight = canvas.height * 0.6;
+      const availableWidth = canvas.width;
+      
+      // Determine max radius to fit game (OUTER_R at layer MAX_LAYERS)
+      const maxGameRadius = Math.min(availableHeight / 2, availableWidth / 2) - 30; // 30px padding
+      const scaleFactor = maxGameRadius / OUTER_R;
+      
+      // Scale all game radii
+      const scaledInnerR = INNER_R * scaleFactor;
+      const scaledLayerSpacing = FIXED_LAYER_SPACING * scaleFactor;
+      
+      // Calculate outer nest radius and control positions for mobile
+      const outermostRadius = scaledInnerR + scaledLayerSpacing * MAX_LAYERS;
+      // Position controls at same level as side buttons (90px from bottom)
+      mobileControlBottomDistance = 90;
+      // Top controls: mirror position (distance from TOP of viewport)
+      mobileControlTopDistance = 90;
+      
       // Draw starfield background with twinkling effect
       stars.forEach(star => {
         star.twinklePhase += star.twinkleSpeed;
@@ -1742,62 +1862,29 @@
       // Center circle
       ctx.fillStyle = '#ff0';
       ctx.beginPath();
-      ctx.arc(CENTER_X, CENTER_Y, INNER_R, 0, Math.PI * 2);
+      ctx.arc(gameCenterX, gameCenterY, scaledInnerR, 0, Math.PI * 2);
       ctx.fill();
-
-      // Game title on the center circle
-      {
-        ctx.save();
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        
-        // Use Roboto font with fallbacks
-        ctx.font = 'bold 14px Roboto, "Helvetica Neue", Arial, sans-serif';
-        ctx.fillStyle = '#000';
-        ctx.globalAlpha = 0.9;
-        
-        const titleLine1 = 'Flow ~together~';
-        const titleLine2 = 'made with 🩸, 💦 & ❤️';
-        const titleLine3 = 'by a gothenburgian';
-        
-        // Calculate total height for vertical centering
-        const line1Height = 14;
-        const line2Height = 10;
-        const line3Height = 10;
-        const spacing = 6;
-        const totalHeight = line1Height + spacing + line2Height + spacing + line3Height;
-        const startY = CENTER_Y - totalHeight / 2 + line1Height / 2;
-        
-        // Draw centered text
-        ctx.fillText(titleLine1, CENTER_X, startY);
-        ctx.font = '10px Roboto, "Helvetica Neue", Arial, sans-serif';
-        ctx.fillText(titleLine2, CENTER_X, startY + line1Height / 2 + spacing + line2Height / 2);
-        ctx.fillText(titleLine3, CENTER_X, startY + line1Height / 2 + spacing + line2Height + spacing + line3Height / 2);
-        
-        ctx.globalAlpha = 1;
-        ctx.restore();
-      }
       
         // Draw layer rings using fixed spacing
         // Layers are numbered 0-11, we only draw layers (MAX_LAYERS - numLayers) through (MAX_LAYERS - 1)
         const minLayerIndex = MAX_LAYERS - numLayers;
         for (let layerIdx = minLayerIndex; layerIdx < MAX_LAYERS; layerIdx++) {
-          const innerRadius = INNER_R + FIXED_LAYER_SPACING * layerIdx;
-          const outerRadius = INNER_R + FIXED_LAYER_SPACING * (layerIdx + 1);
+          const innerRadius = scaledInnerR + scaledLayerSpacing * layerIdx;
+          const outerRadius = scaledInnerR + scaledLayerSpacing * (layerIdx + 1);
           
           // Map layerIdx to color index (0 to numLayers-1 for the color array)
           const colorIndex = layerIdx - minLayerIndex;
           ctx.fillStyle = layerColors[colorIndex];
           ctx.beginPath();
-          ctx.arc(CENTER_X, CENTER_Y, outerRadius, 0, Math.PI * 2);
-          ctx.arc(CENTER_X, CENTER_Y, innerRadius, 0, Math.PI * 2, true); // Draw hole
+          ctx.arc(gameCenterX, gameCenterY, outerRadius, 0, Math.PI * 2);
+          ctx.arc(gameCenterX, gameCenterY, innerRadius, 0, Math.PI * 2, true); // Draw hole
           ctx.fill();
         }
 
       // Draw player nests (wheel segments in outermost layer)
       {
         // Nests are always at the fixed outermost position (MAX_LAYERS - 1)
-        const outermostRadius = INNER_R + FIXED_LAYER_SPACING * MAX_LAYERS;
+        const outermostRadius = scaledInnerR + scaledLayerSpacing * MAX_LAYERS;
         const nestAngularWidth = (Math.PI * 2) / PLAYER_COLORS.length; // Divide circle evenly, no gaps
         
         PLAYER_COLORS.forEach((colorData, idx) => {
@@ -1811,20 +1898,20 @@
           // Draw main nest arc with low opacity (0.2) - nest background
           ctx.globalAlpha = 0.2;
           ctx.strokeStyle = colorData.hex;
-          ctx.lineWidth = 25;
+          ctx.lineWidth = 25 * scaleFactor;
           ctx.lineCap = 'butt'; // Square caps so nests connect seamlessly
           ctx.beginPath();
-          ctx.arc(CENTER_X, CENTER_Y, outermostRadius, nestStartAngle, nestEndAngle);
+          ctx.arc(gameCenterX, gameCenterY, outermostRadius, nestStartAngle, nestEndAngle);
           ctx.stroke();
           
           // Draw collision border at 0.8 opacity if active (outer edge)
           if (isActive) {
             ctx.globalAlpha = 0.8;
             ctx.strokeStyle = colorData.hex;
-            ctx.lineWidth = 4;
+            ctx.lineWidth = 4 * scaleFactor;
             ctx.lineCap = 'butt';
             ctx.beginPath();
-            ctx.arc(CENTER_X, CENTER_Y, outermostRadius + 12.5, nestStartAngle, nestEndAngle);
+            ctx.arc(gameCenterX, gameCenterY, outermostRadius + 12.5 * scaleFactor, nestStartAngle, nestEndAngle);
             ctx.stroke();
           }
           
@@ -1859,36 +1946,36 @@
   // For the current player, use smooth visual layer; for others use their actual layer
   const playerLayer = isMyPlayer ? myLayerVisual : (p.layer ?? 0);
     // Use fixed layer spacing - layers are numbered 0-11, where 11 is outermost
-    const layerRadius = INNER_R + FIXED_LAYER_SPACING * (playerLayer + 1);
+    const layerRadius = scaledInnerR + scaledLayerSpacing * (playerLayer + 1);
         
         ctx.strokeStyle = color;
-        ctx.lineWidth = 25;
+        ctx.lineWidth = 25 * scaleFactor;
         ctx.lineCap = 'round';
         ctx.beginPath();
     const angle = isMyPlayer ? myAngle : p.angle;
         const startA = normalizeAngle(angle - PIPE_WIDTH / 2);
         const endA = normalizeAngle(angle + PIPE_WIDTH / 2);
-    ctx.arc(CENTER_X, CENTER_Y, layerRadius, startA, endA);
+    ctx.arc(gameCenterX, gameCenterY, layerRadius, startA, endA);
         ctx.stroke();
 
         // Accent ring
-        ctx.lineWidth = 8;
+        ctx.lineWidth = 8 * scaleFactor;
         ctx.strokeStyle = color + '44';
         ctx.beginPath();
-    ctx.arc(CENTER_X, CENTER_Y, layerRadius, startA, endA);
+    ctx.arc(gameCenterX, gameCenterY, layerRadius, startA, endA);
         ctx.stroke();
 
         // Speed boost indicator (draw small triangles/chevrons if myPlayer has boosts)
         if (isMyPlayer && mySpeedBoost > 0) {
           const midAngle = angle;
           const numChevrons = Math.min(3, mySpeedBoost); // 1 chevron per boost, max 3 visible
-          const chevronGap = 12;
-          const baseOffset = layerRadius + 18;
+          const chevronGap = 12 * scaleFactor;
+          const baseOffset = layerRadius + 18 * scaleFactor;
           for (let c = 0; c < numChevrons; c++) {
             const offset = baseOffset + c * chevronGap;
-            const cx = CENTER_X + Math.cos(midAngle) * offset;
-            const cy = CENTER_Y + Math.sin(midAngle) * offset;
-            const size = 6;
+            const cx = gameCenterX + Math.cos(midAngle) * offset;
+            const cy = gameCenterY + Math.sin(midAngle) * offset;
+            const size = 6 * scaleFactor;
             // Draw a small forward-facing triangle (speed indicator)
             ctx.save();
             ctx.translate(cx, cy);
@@ -1907,13 +1994,13 @@
 
       // Flows - render from cache and remove by radius threshold (with generous overshoot)
       const activeFlows: Flow[] = [];
-  const overshootPx = 240; // keep flows until further past canvas edge (doubled)
+  const overshootPx = 240 * scaleFactor; // keep flows until further past canvas edge (doubled)
       flowCache.forEach((flow, id) => {
         if (flowsToRemove.has(id)) return; // collided -> skip
         const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
-  const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
+  const flowRadius = scaledInnerR + progress * (maxGameRadius - scaledInnerR);
   // If flow exits beyond the canvas (outside render radius), tag it as layer 5 once
-  if (flow.layer !== 5 && flowRadius > MAX_FLOW_RADIUS) {
+  if (flow.layer !== 5 && flowRadius > maxGameRadius) {
           flow.layer = 5;
           // If we have the Firebase key, persist layer change for server-side cleanup
           const key = (flow as any).key as string | undefined;
@@ -1928,7 +2015,7 @@
             }
           }
         }
-        if (flowRadius < MAX_FLOW_RADIUS + overshootPx) {
+        if (flowRadius < maxGameRadius + overshootPx) {
           activeFlows.push(flow);
         } else {
           flowCache.delete(id);
@@ -1937,16 +2024,16 @@
       
       activeFlows.forEach(flow => {
         const rawProgress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
-        const r = INNER_R + rawProgress * (MAX_FLOW_RADIUS - INNER_R);
-        const headX = CENTER_X + Math.cos(flow.angle) * r;
-        const headY = CENTER_Y + Math.sin(flow.angle) * r;
+        const r = scaledInnerR + rawProgress * (maxGameRadius - scaledInnerR);
+        const headX = gameCenterX + Math.cos(flow.angle) * r;
+        const headY = gameCenterY + Math.sin(flow.angle) * r;
 
         // Fading trail length factor (shortens near end of life)
         const trailFactor = Math.min(1, Math.max(0.15, 1 - rawProgress * 0.7));
-        const tailR = INNER_R + (rawProgress - trailFactor * 0.25) * (MAX_FLOW_RADIUS - INNER_R);
-        const tailRClamped = Math.max(INNER_R, tailR);
-        const tailX = CENTER_X + Math.cos(flow.angle) * tailRClamped;
-        const tailY = CENTER_Y + Math.sin(flow.angle) * tailRClamped;
+        const tailR = scaledInnerR + (rawProgress - trailFactor * 0.25) * (maxGameRadius - scaledInnerR);
+        const tailRClamped = Math.max(scaledInnerR, tailR);
+        const tailX = gameCenterX + Math.cos(flow.angle) * tailRClamped;
+        const tailY = gameCenterY + Math.sin(flow.angle) * tailRClamped;
 
         // Create gradient for trail fade
         const grad = ctx.createLinearGradient(tailX, tailY, headX, headY);
@@ -1958,7 +2045,7 @@
           grad.addColorStop(1, 'rgba(255,255,0,0.4)');
         }
 
-        ctx.lineWidth = flow.isEvil ? 5 : 4;
+        ctx.lineWidth = flow.isEvil ? 5 * scaleFactor : 4 * scaleFactor;
         ctx.lineCap = 'round';
         ctx.strokeStyle = grad;
         ctx.beginPath();
@@ -2000,6 +2087,170 @@
       // Check collisions for Player 2 (local co-op)
       if (localCoopEnabled && player2Active && player2Player) {
         activeFlows.forEach(checkScorePlayer2);
+      }
+
+      // Render arc animations - flowing forward effect (wave moves from player toward sun)
+      const nowMs = Date.now();
+      activeArcs = activeArcs.filter(arc => nowMs - arc.startTime < arc.duration);
+      
+      activeArcs.forEach(arc => {
+        const progress = (nowMs - arc.startTime) / arc.duration;
+        
+        // Calculate player fragment size (each player gets an equal slice of the circle)
+        const fragmentAngularWidth = (Math.PI * 2) / PLAYER_COLORS.length;
+        // Make arc wider - 2x fragment width for better coverage
+        const arcAngularWidth = fragmentAngularWidth * 2.0;
+        
+        // Arc flows forward - starting at player layer, moving INWARD toward sun to intercept flows
+        const startLayerRadius = scaledInnerR + scaledLayerSpacing * arc.playerLayer;
+        const layerSpan = 3;
+        
+        // The wave position moves inward (toward sun at layer 0) as progress increases
+        const waveCenter = arc.playerLayer - progress * layerSpan; // Moves from playerLayer toward 0
+        const waveWidth = 1.5; // How wide the wave is (in layers)
+        
+        const startAngle = arc.playerAngle - arcAngularWidth / 2;
+        const endAngle = arc.playerAngle + arcAngularWidth / 2;
+        
+        // Color based on player
+        const arcColor = arc.isPlayer2 ? 'rgba(100, 150, 255, ' : 'rgba(255, 200, 0, ';
+        
+        // Draw the flowing wave across all potentially visible layers (moving inward toward sun)
+        for (let checkLayer = arc.playerLayer; checkLayer >= Math.max(0, arc.playerLayer - layerSpan); checkLayer--) {
+          // Calculate how far this layer is from the wave center
+          const distanceFromWave = Math.abs(checkLayer - waveCenter);
+          
+          // Only render if within wave width
+          if (distanceFromWave > waveWidth) continue;
+          
+          // Calculate alpha based on distance from wave center (Gaussian-like falloff)
+          const waveFalloff = 1 - (distanceFromWave / waveWidth);
+          const layerAlpha = Math.pow(waveFalloff, 2) * (1 - progress * 0.3); // Fade out overall as time progresses
+          
+          if (layerAlpha <= 0.05) continue;
+          
+          const currentLayerRadius = scaledInnerR + scaledLayerSpacing * checkLayer;
+          
+          // Draw multiple arc layers for glow effect
+          for (let glowLayer = 0; glowLayer < 3; glowLayer++) {
+            const alpha = layerAlpha * (0.7 - glowLayer * 0.15);
+            const width = (12 - glowLayer * 3) * scaleFactor;
+            
+            ctx.strokeStyle = arcColor + alpha + ')';
+            ctx.lineWidth = width;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.arc(gameCenterX, gameCenterY, currentLayerRadius + glowLayer * 3 * scaleFactor, startAngle, endAngle);
+            ctx.stroke();
+          }
+          
+          // Add particles/sparkles along the arc (more at wave center)
+          if (distanceFromWave < 0.8) {
+            const particleCount = 8;
+            for (let i = 0; i < particleCount; i++) {
+              const angle = startAngle + (endAngle - startAngle) * (i / particleCount);
+              const particleRadius = currentLayerRadius + Math.sin(progress * Math.PI * 6 + i) * 6 * scaleFactor;
+              const px = gameCenterX + Math.cos(angle) * particleRadius;
+              const py = gameCenterY + Math.sin(angle) * particleRadius;
+              
+              ctx.fillStyle = arcColor + (layerAlpha * 0.8) + ')';
+              ctx.beginPath();
+              ctx.arc(px, py, 3 * scaleFactor * layerAlpha, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+      });
+
+      // Arc collision detection - check flows as the wave passes through (any layer)
+      if (activeArcs.length > 0) {
+        const fragmentAngularWidth = (Math.PI * 2) / PLAYER_COLORS.length;
+        // Make arc wider - 2x fragment width for better coverage
+        const arcAngularWidth = fragmentAngularWidth * 2.0;
+        
+        console.log('[Arc] Active arcs:', activeArcs.length, 'Flow cache size:', flowCache.size);
+        
+        activeArcs.forEach(arc => {
+          const progress = (nowMs - arc.startTime) / arc.duration;
+          
+          let checkedCount = 0;
+          let evilCount = 0;
+          let passedAngleCheck = 0;
+          
+          // Check all flows in flowCache (ignoring layer)
+          flowCache.forEach((flow, flowId) => {
+            checkedCount++;
+            
+            if (!flow.isEvil) return;
+            evilCount++;
+            
+            if (arc.destroyedFlows.has(flowId)) return;
+            
+            const flowAngle = flow.angle;
+            
+            // Check angle only
+            const angleDiff = Math.abs(normalizeAngle(flowAngle - arc.playerAngle));
+            const normalizedDiff = angleDiff > Math.PI ? 2 * Math.PI - angleDiff : angleDiff;
+            const arcHalfWidth = arcAngularWidth / 2;
+            
+            // Log first few flows being checked
+            if (evilCount <= 3) {
+              console.log('[Arc] Checking evil flow:', {
+                flowId,
+                flowAngle: (flowAngle * 180 / Math.PI).toFixed(1) + '°',
+                arcAngle: (arc.playerAngle * 180 / Math.PI).toFixed(1) + '°',
+                normalizedDiff: (normalizedDiff * 180 / Math.PI).toFixed(1) + '°',
+                arcHalfWidth: (arcHalfWidth * 180 / Math.PI).toFixed(1) + '°',
+                willDestroy: normalizedDiff <= arcHalfWidth
+              });
+            }
+            
+            if (normalizedDiff <= arcHalfWidth) {
+              passedAngleCheck++;
+              
+              // Destroy this flow
+              arc.destroyedFlows.add(flowId);
+              
+              // Get Firebase key from flow object (flowId has decimals which Firebase doesn't allow)
+              const dbKey = (flow as any).key as string | undefined;
+              
+              console.log('[Arc] 💥 DESTROYING FLOW!', {
+                flowId,
+                dbKey,
+                flowLayer: flow.layer ?? 0,
+                flowAngle: (flowAngle * 180 / Math.PI).toFixed(1) + '°',
+                arcAngle: (arc.playerAngle * 180 / Math.PI).toFixed(1) + '°',
+                angleDiff: (normalizedDiff * 180 / Math.PI).toFixed(1) + '°',
+                arcHalfWidth: (arcHalfWidth * 180 / Math.PI).toFixed(1) + '°',
+                progress: (progress * 100).toFixed(0) + '%'
+              });
+              
+              // Remove from local cache and mark for removal immediately
+              flowCache.delete(flowId);
+              flowsToRemove.add(flowId);
+              
+              // Destroy via Firebase using the actual Firebase key
+              if (dbKey) {
+                import('firebase/database').then(({ ref, set }) => {
+                  set(ref(db, `${ROOM}/flows/${dbKey}`), null).catch((err: any) => {
+                    console.error('[Arc] Failed to destroy flow:', err);
+                  });
+                });
+              } else {
+                console.warn('[Arc] Flow has no Firebase key, cannot delete:', flowId);
+              }
+            }
+          });
+          
+          console.log('[Arc Check Summary]', {
+            progress: (progress * 100).toFixed(0) + '%',
+            totalFlows: checkedCount,
+            evilFlows: evilCount,
+            destroyed: passedAngleCheck,
+            arcAngle: (arc.playerAngle * 180 / Math.PI).toFixed(1) + '°',
+            arcWidth: (arcAngularWidth * 180 / Math.PI).toFixed(1) + '°'
+          });
+        });
       }
 
       // Scores overlay (sorted by score desc): [flag] [name] [score] [-hits] (session + active filtering, grayed inactive)
@@ -2051,11 +2302,11 @@
       // Top-right canvas overlay: game slots (active usage) visual (12 dots)
       {
         const slotCount = PLAYER_COLORS.length;
+        const isMobile = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
         const dotSize = 12;
         const gap = 6;
         const margin = 12;
         const panelPadding = 8;
-        const panelW = slotCount * dotSize + (slotCount - 1) * gap + panelPadding * 2;
         
         // Count different player types
         let regularPlayers = 0;
@@ -2074,54 +2325,90 @@
           coopPlayers++;
         }
         
-        const labelHeight = 28; // Height for the text area above dots
-        const panelH = labelHeight + dotSize + panelPadding * 2;
-        const panelX = canvas.width - panelW - margin;
-        const panelY = margin;
-        // Panel background
-        ctx.globalAlpha = 0.85;
-        ctx.fillStyle = '#1a1a1a';
-        ctx.fillRect(panelX, panelY, panelW, panelH);
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = '#333';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelW - 1, panelH - 1);
-        // Label - first line (centered in label area)
-        ctx.font = 'bold 11px Arial';
-        ctx.fillStyle = '#ccc';
-        ctx.textAlign = 'center';
-        const activeSlots = activeUsedColorsAll.size;
-        const textStartY = panelY + (labelHeight - 12) / 2; // Center the two lines
-        const textCenterX = panelX + panelW / 2;
-        ctx.fillText(`Slots ${activeSlots}/${slotCount}`, textCenterX, textStartY + 10);
-        // Label - second line (breakdown)
-        ctx.font = '10px Arial';
-        ctx.fillStyle = '#999';
-        let breakdown = [];
-        if (regularPlayers > 0) breakdown.push(`${regularPlayers} player${regularPlayers > 1 ? 's' : ''}`);
-        if (botPlayerCount > 0) breakdown.push(`${botPlayerCount} bot${botPlayerCount > 1 ? 's' : ''}`);
-        if (coopPlayers > 0) breakdown.push(`${coopPlayers} co-op`);
-        if (breakdown.length > 0) {
-          ctx.fillText(breakdown.join(', '), textCenterX, textStartY + 22);
-        }
-        ctx.textAlign = 'left'; // Reset to default
-        // Dots row
-        const dotsY = panelY + labelHeight + panelPadding;
-        for (let i = 0; i < slotCount; i++) {
-          const x = panelX + panelPadding + i * (dotSize + gap);
-          const isTaken = activeUsedColorsAll.has(i);
-          const isMine = myColorIndex === i;
-          const color = isTaken ? PLAYER_COLORS[i].hex : '#444';
-          ctx.beginPath();
-          ctx.fillStyle = color;
-          ctx.arc(x + dotSize / 2, dotsY + dotSize / 2, dotSize / 2, 0, Math.PI * 2);
-          ctx.fill();
-          // Outline
-          ctx.strokeStyle = isMine ? '#fff' : (isTaken ? color + 'aa' : '#666');
-          ctx.lineWidth = isMine ? 2 : 1;
-          ctx.beginPath();
-          ctx.arc(x + dotSize / 2, dotsY + dotSize / 2, dotSize / 2 + (isMine?1:0), 0, Math.PI * 2);
-          ctx.stroke();
+        // On mobile: only show text, no dots
+        if (isMobile) {
+          const panelW = 140;
+          const panelH = 36;
+          const panelX = canvas.width - panelW - margin;
+          const panelY = margin;
+          // Panel background
+          ctx.globalAlpha = 0.85;
+          ctx.fillStyle = '#1a1a1a';
+          ctx.fillRect(panelX, panelY, panelW, panelH);
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = '#333';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelW - 1, panelH - 1);
+          // Label - first line (centered)
+          ctx.font = 'bold 12px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'center';
+          const activeSlots = activeUsedColorsAll.size;
+          const textCenterX = panelX + panelW / 2;
+          ctx.fillText(`Slots ${activeSlots}/${slotCount}`, textCenterX, panelY + 14);
+          // Label - second line (breakdown)
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#999';
+          let breakdown = [];
+          if (regularPlayers > 0) breakdown.push(`${regularPlayers}p`);
+          if (botPlayerCount > 0) breakdown.push(`${botPlayerCount}bot`);
+          if (coopPlayers > 0) breakdown.push(`${coopPlayers}co-op`);
+          if (breakdown.length > 0) {
+            ctx.fillText(breakdown.join(' • '), textCenterX, panelY + 28);
+          }
+          ctx.textAlign = 'left'; // Reset
+        } else {
+          // Desktop: show dots
+          const panelW = slotCount * dotSize + (slotCount - 1) * gap + panelPadding * 2;
+          const labelHeight = 28; // Height for the text area above dots
+          const panelH = labelHeight + dotSize + panelPadding * 2;
+          const panelX = canvas.width - panelW - margin;
+          const panelY = margin;
+          // Panel background
+          ctx.globalAlpha = 0.85;
+          ctx.fillStyle = '#1a1a1a';
+          ctx.fillRect(panelX, panelY, panelW, panelH);
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = '#333';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelW - 1, panelH - 1);
+          // Label - first line (centered in label area)
+          ctx.font = 'bold 11px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'center';
+          const activeSlots = activeUsedColorsAll.size;
+          const textStartY = panelY + (labelHeight - 12) / 2; // Center the two lines
+          const textCenterX = panelX + panelW / 2;
+          ctx.fillText(`Slots ${activeSlots}/${slotCount}`, textCenterX, textStartY + 10);
+          // Label - second line (breakdown)
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#999';
+          let breakdown = [];
+          if (regularPlayers > 0) breakdown.push(`${regularPlayers} player${regularPlayers > 1 ? 's' : ''}`);
+          if (botPlayerCount > 0) breakdown.push(`${botPlayerCount} bot${botPlayerCount > 1 ? 's' : ''}`);
+          if (coopPlayers > 0) breakdown.push(`${coopPlayers} co-op`);
+          if (breakdown.length > 0) {
+            ctx.fillText(breakdown.join(', '), textCenterX, textStartY + 22);
+          }
+          ctx.textAlign = 'left'; // Reset to default
+          // Dots row
+          const dotsY = panelY + labelHeight + panelPadding;
+          for (let i = 0; i < slotCount; i++) {
+            const x = panelX + panelPadding + i * (dotSize + gap);
+            const isTaken = activeUsedColorsAll.has(i);
+            const isMine = myColorIndex === i;
+            const color = isTaken ? PLAYER_COLORS[i].hex : '#444';
+            ctx.beginPath();
+            ctx.fillStyle = color;
+            ctx.arc(x + dotSize / 2, dotsY + dotSize / 2, dotSize / 2, 0, Math.PI * 2);
+            ctx.fill();
+            // Outline
+            ctx.strokeStyle = isMine ? '#fff' : (isTaken ? color + 'aa' : '#666');
+            ctx.lineWidth = isMine ? 2 : 1;
+            ctx.beginPath();
+            ctx.arc(x + dotSize / 2, dotsY + dotSize / 2, dotSize / 2 + (isMine?1:0), 0, Math.PI * 2);
+            ctx.stroke();
+          }
         }
       }
 
@@ -2148,22 +2435,48 @@
             myName = prettyName(myPlayer.playerId);
             if (myColorIndex != null && PLAYER_COLORS[myColorIndex]) colorHex = PLAYER_COLORS[myColorIndex].hex;
           }
-          // Color dot
-          ctx.fillStyle = colorHex;
-          ctx.beginPath();
-          ctx.arc(nameX + 6, labelY - 6, 5, 0, Math.PI * 2);
-          ctx.fill();
-          // Name with underline in color
-          const textX = nameX + 18;
-          ctx.fillStyle = '#fff';
-          ctx.fillText(myName, textX, labelY);
-          const w = ctx.measureText(myName).width;
-          ctx.strokeStyle = colorHex + 'cc';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(textX, labelY + 3);
-          ctx.lineTo(textX + w, labelY + 3);
-          ctx.stroke();
+          
+          const isMobile = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
+          
+          if (isMobile) {
+            // Mobile: Show player name on the left at same height as FPS/Playtime (mirrored position)
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#fff';
+            // Color dot
+            ctx.fillStyle = colorHex;
+            ctx.beginPath();
+            ctx.arc(14, labelY - 26, 5, 0, Math.PI * 2);
+            ctx.fill();
+            // Name with underline in color
+            const textX = 26;
+            ctx.fillStyle = '#fff';
+            ctx.fillText(myName, textX, labelY - 20);
+            const w = ctx.measureText(myName).width;
+            ctx.strokeStyle = colorHex + 'cc';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(textX, labelY - 17);
+            ctx.lineTo(textX + w, labelY - 17);
+            ctx.stroke();
+          } else {
+            // Desktop: Show player name at bottom as before
+            // Color dot
+            ctx.fillStyle = colorHex;
+            ctx.beginPath();
+            ctx.arc(nameX + 6, labelY - 6, 5, 0, Math.PI * 2);
+            ctx.fill();
+            // Name with underline in color
+            const textX = nameX + 18;
+            ctx.fillStyle = '#fff';
+            ctx.fillText(myName, textX, labelY);
+            const w = ctx.measureText(myName).width;
+            ctx.strokeStyle = colorHex + 'cc';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(textX, labelY + 3);
+            ctx.lineTo(textX + w, labelY + 3);
+            ctx.stroke();
+          }
 
           // Right side: FPS above playtime
           ctx.textAlign = 'right';
@@ -2581,6 +2894,56 @@
     on:contextmenu={handleCanvasContextMenu}
   ></canvas>
   
+  <!-- Splash Screen Overlay -->
+  {#if showSplash}
+    <div 
+      style="
+        position: absolute; 
+        top: 50%; 
+        left: 50%; 
+        transform: translate(-50%, -50%); 
+        z-index: 1000; 
+        text-align: center;
+        animation: fadeOut 3s ease-out forwards;
+        pointer-events: none;
+      ">
+      <div style="
+        background: rgba(0, 0, 0, 0.85); 
+        padding: 40px 60px; 
+        border-radius: 20px; 
+        box-shadow: 0 8px 32px rgba(255, 215, 0, 0.3);
+        border: 2px solid rgba(255, 215, 0, 0.5);
+      ">
+        <h1 style="
+          margin: 0 0 20px 0; 
+          font-size: 48px; 
+          color: #ffd700; 
+          font-family: 'Roboto', Arial, sans-serif; 
+          font-weight: bold;
+          text-shadow: 0 0 20px rgba(255, 215, 0, 0.8);
+        ">
+          Flow ~together~
+        </h1>
+        <p style="
+          margin: 10px 0; 
+          font-size: 18px; 
+          color: #fff; 
+          font-family: 'Roboto', Arial, sans-serif;
+        ">
+          made with 🩸, 💦 & ❤️
+        </p>
+        <p style="
+          margin: 10px 0; 
+          font-size: 16px; 
+          color: #aaa; 
+          font-family: 'Roboto', Arial, sans-serif;
+        ">
+          by a gothenburgian
+        </p>
+      </div>
+    </div>
+  {/if}
+  
   <!-- Scoreboard Overlay (top-left of canvas) -->
   <div style="position: absolute; top: 0; left: 0; pointer-events: none; width: 100%; height: 100%;">
     <div style="position: absolute; top: 2.5%; left: 2.5%; pointer-events: auto;">
@@ -2625,102 +2988,183 @@
 
 <!-- Mobile Controls (bottom-center) -->
 {#if browser && (emulateMobileTouch || navigator.maxTouchPoints > 0)}
-<div style="position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px;">
-  <!-- Up button -->
-  <button
-    aria-label="Up"
-    aria-pressed={mobileUpPressed}
-    on:pointerdown={() => { mobileUpPressed = true; simulateKey('ArrowUp', true); }}
-    on:pointerup={() => { mobileUpPressed = false; simulateKey('ArrowUp', false); }}
-    on:pointerleave={() => { mobileUpPressed = false; simulateKey('ArrowUp', false); }}
-    on:pointercancel={() => { mobileUpPressed = false; simulateKey('ArrowUp', false); }}
-    style={`background:${mobileUpPressed?'#555':'#333'}; color:#fff; border:2px solid ${mobileUpPressed?'#aaa':'#555'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileUpPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileUpPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-  ⬆️
-  </button>
-  <!-- Left, Down, Right buttons -->
-  <div style="display: flex; gap: 8px;">
+<div style="position: absolute; bottom: {mobileControlBottomDistance}px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; align-items: flex-end; gap: 16px;">
+  <!-- Main directional controls (center) -->
+  <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+    <!-- Up button -->
     <button
-      aria-label="Left"
-      aria-pressed={mobileLeftPressed}
-      on:pointerdown={() => { mobileLeftPressed = true; simulateKey('ArrowLeft', true); }}
-      on:pointerup={() => { mobileLeftPressed = false; simulateKey('ArrowLeft', false); }}
-      on:pointerleave={() => { mobileLeftPressed = false; simulateKey('ArrowLeft', false); }}
-      on:pointercancel={() => { mobileLeftPressed = false; simulateKey('ArrowLeft', false); }}
-      style={`background:${mobileLeftPressed?'#555':'#333'}; color:#fff; border:2px solid ${mobileLeftPressed?'#aaa':'#555'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileLeftPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileLeftPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-  ⬅️
+      aria-label="Up"
+      aria-pressed={mobileUpPressed}
+      on:pointerdown={() => { mobileUpPressed = true; simulateKey('ArrowUp', true); }}
+      on:pointerup={() => { mobileUpPressed = false; simulateKey('ArrowUp', false); }}
+      on:pointerleave={() => { mobileUpPressed = false; simulateKey('ArrowUp', false); }}
+      on:pointercancel={() => { mobileUpPressed = false; simulateKey('ArrowUp', false); }}
+      style={`background:${mobileUpPressed?'#555':'#333'}; color:#fff; border:2px solid ${mobileUpPressed?'#aaa':'#555'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileUpPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileUpPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+    ⬆️
     </button>
-    <button
-      aria-label="Down"
-      aria-pressed={mobileDownPressed}
-      on:pointerdown={() => { mobileDownPressed = true; simulateKey('ArrowDown', true); }}
-      on:pointerup={() => { mobileDownPressed = false; simulateKey('ArrowDown', false); }}
-      on:pointerleave={() => { mobileDownPressed = false; simulateKey('ArrowDown', false); }}
-      on:pointercancel={() => { mobileDownPressed = false; simulateKey('ArrowDown', false); }}
-      style={`background:${mobileDownPressed?'#555':'#333'}; color:#fff; border:2px solid ${mobileDownPressed?'#aaa':'#555'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileDownPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileDownPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-  ⬇️
-    </button>
-    <button
-      aria-label="Right"
-      aria-pressed={mobileRightPressed}
-      on:pointerdown={() => { mobileRightPressed = true; simulateKey('ArrowRight', true); }}
-      on:pointerup={() => { mobileRightPressed = false; simulateKey('ArrowRight', false); }}
-      on:pointerleave={() => { mobileRightPressed = false; simulateKey('ArrowRight', false); }}
-      on:pointercancel={() => { mobileRightPressed = false; simulateKey('ArrowRight', false); }}
-      style={`background:${mobileRightPressed?'#555':'#333'}; color:#fff; border:2px solid ${mobileRightPressed?'#aaa':'#555'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileRightPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileRightPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-  ➡️
-    </button>
+    <!-- Left, Down, Right buttons -->
+    <div style="display: flex; gap: 8px;">
+      <button
+        aria-label="Left"
+        aria-pressed={mobileLeftPressed}
+        on:pointerdown={() => { mobileLeftPressed = true; simulateKey('ArrowLeft', true); }}
+        on:pointerup={() => { mobileLeftPressed = false; simulateKey('ArrowLeft', false); }}
+        on:pointerleave={() => { mobileLeftPressed = false; simulateKey('ArrowLeft', false); }}
+        on:pointercancel={() => { mobileLeftPressed = false; simulateKey('ArrowLeft', false); }}
+        style={`background:${mobileLeftPressed?'#555':'#333'}; color:#fff; border:2px solid ${mobileLeftPressed?'#aaa':'#555'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileLeftPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileLeftPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+    ⬅️
+      </button>
+      <button
+        aria-label="Down"
+        aria-pressed={mobileDownPressed}
+        on:pointerdown={() => { mobileDownPressed = true; simulateKey('ArrowDown', true); }}
+        on:pointerup={() => { mobileDownPressed = false; simulateKey('ArrowDown', false); }}
+        on:pointerleave={() => { mobileDownPressed = false; simulateKey('ArrowDown', false); }}
+        on:pointercancel={() => { mobileDownPressed = false; simulateKey('ArrowDown', false); }}
+        style={`background:${mobileDownPressed?'#555':'#333'}; color:#fff; border:2px solid ${mobileDownPressed?'#aaa':'#555'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileDownPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileDownPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+    ⬇️
+      </button>
+      <button
+        aria-label="Right"
+        aria-pressed={mobileRightPressed}
+        on:pointerdown={() => { mobileRightPressed = true; simulateKey('ArrowRight', true); }}
+        on:pointerup={() => { mobileRightPressed = false; simulateKey('ArrowRight', false); }}
+        on:pointerleave={() => { mobileRightPressed = false; simulateKey('ArrowRight', false); }}
+        on:pointercancel={() => { mobileRightPressed = false; simulateKey('ArrowRight', false); }}
+        style={`background:${mobileRightPressed?'#555':'#333'}; color:#fff; border:2px solid ${mobileRightPressed?'#aaa':'#555'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileRightPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileRightPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+    ➡️
+      </button>
+    </div>
   </div>
+  
+  <!-- Right side: Shoot button and Score -->
+  {#if myPlayer}
+    {@const myScore = players.find(p => p.id === myPlayer.playerId)?.score || 0}
+    {@const p1CooldownRemaining = Math.max(0, ARC_COOLDOWN_MS - (currentTime - arcCooldownP1))}
+    {@const p1OnCooldown = p1CooldownRemaining > 0}
+    {@const p1Progress = p1OnCooldown ? (ARC_COOLDOWN_MS - p1CooldownRemaining) / ARC_COOLDOWN_MS : 1}
+    <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+      <!-- Score display -->
+      <div style="background: rgba(0, 0, 0, 0.7); border: 2px solid #555; border-radius: 8px; padding: 4px 12px; font-size: 14px; font-weight: bold; color: #4f4; text-align: center; min-width: 60px;">
+        {myScore}
+      </div>
+      <!-- Shoot Arc button with progress bar -->
+      <div style="position: relative; width: 60px; height: 60px;">
+        <button
+          aria-label="Shoot Arc"
+          aria-pressed={mobileShootPressed}
+          disabled={p1OnCooldown}
+          on:pointerdown={() => { 
+            mobileShootPressed = true;
+            if (myColorIndex != null && !p1OnCooldown) {
+              useArcAbility(myAngle, myLayer, false);
+            }
+          }}
+          on:pointerup={() => { mobileShootPressed = false; }}
+          on:pointerleave={() => { mobileShootPressed = false; }}
+          on:pointercancel={() => { mobileShootPressed = false; }}
+          style={`position: relative; background:${p1OnCooldown?'#333':mobileShootPressed?'#755':'#533'}; color:${p1OnCooldown?'#666':'#fff'}; border:2px solid ${p1OnCooldown?'#444':mobileShootPressed?'#aaa':'#855'}; border-radius:8px; width:100%; height:100%; font-size:24px; cursor:${p1OnCooldown?'not-allowed':'pointer'}; user-select:none; touch-action:none; box-shadow:${mobileShootPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileShootPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s; overflow: hidden;`}>
+          <span style="position: relative; z-index: 2;">🌊</span>
+          {#if p1OnCooldown}
+            <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 100%; background: linear-gradient(to top, rgba(255, 170, 0, 0.4) 0%, rgba(255, 170, 0, 0) 100%); border-radius: 6px; z-index: 1; transform: scaleY({p1Progress}); transform-origin: bottom; transition: transform 0.1s linear;"></div>
+          {/if}
+        </button>
+      </div>
+    </div>
+  {/if}
 </div>
 {/if}
 
 <!-- Player 2 Mobile Controls (only show on touch devices when local coop is active) -->
 {#if browser && localCoopEnabled && player2Active && (emulateMobileTouch || navigator.maxTouchPoints > 0)}
-<div style="position: absolute; top: 10px; left: 50%; transform: translateX(-50%) rotate(180deg); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px; opacity: 0.8;">
-  <div style="font-size: 12px; color: #fff; text-align: center; margin-bottom: 4px;">P2</div>
-  <!-- Up button -->
-  <button
-    aria-label="Player 2 Up"
-    aria-pressed={mobileP2UpPressed}
-    on:pointerdown={() => { mobileP2UpPressed = true; }}
-    on:pointerup={() => { mobileP2UpPressed = false; }}
-    on:pointerleave={() => { mobileP2UpPressed = false; }}
-    on:pointercancel={() => { mobileP2UpPressed = false; }}
-    style={`background:${mobileP2UpPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2UpPressed?'#aad':'#557'}; border-radius:8px; width:50px; height:50px; font-size:20px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2UpPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2UpPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-  ⬆️
-  </button>
-  <!-- Left, Down, Right buttons -->
-  <div style="display: flex; gap: 6px;">
+<div style="position: absolute; top: {mobileControlTopDistance}px; left: 50%; transform: translateX(-50%) rotate(180deg); z-index: 10; display: flex; align-items: flex-end; gap: 16px; opacity: 0.8;">
+  <!-- Main directional controls (center) -->
+  <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+    <div style="font-size: 12px; color: #fff; text-align: center; margin-bottom: 4px; transform: rotate(180deg);">P2</div>
+    <!-- Up button -->
     <button
-      aria-label="Player 2 Left"
-      aria-pressed={mobileP2LeftPressed}
-      on:pointerdown={() => { mobileP2LeftPressed = true; }}
-      on:pointerup={() => { mobileP2LeftPressed = false; }}
-      on:pointerleave={() => { mobileP2LeftPressed = false; }}
-      on:pointercancel={() => { mobileP2LeftPressed = false; }}
-      style={`background:${mobileP2LeftPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2LeftPressed?'#aad':'#557'}; border-radius:8px; width:50px; height:50px; font-size:20px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2LeftPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2LeftPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-  ⬅️
+      aria-label="Player 2 Up"
+      aria-pressed={mobileP2UpPressed}
+      on:pointerdown={() => { mobileP2UpPressed = true; }}
+      on:pointerup={() => { mobileP2UpPressed = false; }}
+      on:pointerleave={() => { mobileP2UpPressed = false; }}
+      on:pointercancel={() => { mobileP2UpPressed = false; }}
+      style={`background:${mobileP2UpPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2UpPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2UpPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2UpPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+    ⬆️
     </button>
-    <button
-      aria-label="Player 2 Down"
-      aria-pressed={mobileP2DownPressed}
-      on:pointerdown={() => { mobileP2DownPressed = true; }}
-      on:pointerup={() => { mobileP2DownPressed = false; }}
-      on:pointerleave={() => { mobileP2DownPressed = false; }}
-      on:pointercancel={() => { mobileP2DownPressed = false; }}
-      style={`background:${mobileP2DownPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2DownPressed?'#aad':'#557'}; border-radius:8px; width:50px; height:50px; font-size:20px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2DownPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2DownPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-  ⬇️
-    </button>
-    <button
-      aria-label="Player 2 Right"
-      aria-pressed={mobileP2RightPressed}
-      on:pointerdown={() => { mobileP2RightPressed = true; }}
-      on:pointerup={() => { mobileP2RightPressed = false; }}
-      on:pointerleave={() => { mobileP2RightPressed = false; }}
-      on:pointercancel={() => { mobileP2RightPressed = false; }}
-      style={`background:${mobileP2RightPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2RightPressed?'#aad':'#557'}; border-radius:8px; width:50px; height:50px; font-size:20px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2RightPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2RightPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-  ➡️
-    </button>
+    <!-- Left, Down, Right buttons -->
+    <div style="display: flex; gap: 8px;">
+      <button
+        aria-label="Player 2 Left"
+        aria-pressed={mobileP2LeftPressed}
+        on:pointerdown={() => { mobileP2LeftPressed = true; }}
+        on:pointerup={() => { mobileP2LeftPressed = false; }}
+        on:pointerleave={() => { mobileP2LeftPressed = false; }}
+        on:pointercancel={() => { mobileP2LeftPressed = false; }}
+        style={`background:${mobileP2LeftPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2LeftPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2LeftPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2LeftPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+    ⬅️
+      </button>
+      <button
+        aria-label="Player 2 Down"
+        aria-pressed={mobileP2DownPressed}
+        on:pointerdown={() => { mobileP2DownPressed = true; }}
+        on:pointerup={() => { mobileP2DownPressed = false; }}
+        on:pointerleave={() => { mobileP2DownPressed = false; }}
+        on:pointercancel={() => { mobileP2DownPressed = false; }}
+        style={`background:${mobileP2DownPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2DownPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2DownPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2DownPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+    ⬇️
+      </button>
+      <button
+        aria-label="Player 2 Right"
+        aria-pressed={mobileP2RightPressed}
+        on:pointerdown={() => { mobileP2RightPressed = true; }}
+        on:pointerup={() => { mobileP2RightPressed = false; }}
+        on:pointerleave={() => { mobileP2RightPressed = false; }}
+        on:pointercancel={() => { mobileP2RightPressed = false; }}
+        style={`background:${mobileP2RightPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2RightPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2RightPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2RightPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+    ➡️
+      </button>
+    </div>
   </div>
+  
+  <!-- Right side: Shoot button and Score for Player 2 -->
+  {#if player2ColorIndex != null}
+    {@const p2Player = players.find(p => p.colorIndex === player2ColorIndex)}
+    {#if p2Player}
+      {@const p2Score = p2Player.score || 0}
+      {@const p2CooldownRemaining = Math.max(0, ARC_COOLDOWN_MS - (currentTime - arcCooldownP2))}
+      {@const p2OnCooldown = p2CooldownRemaining > 0}
+      {@const p2Progress = p2OnCooldown ? (ARC_COOLDOWN_MS - p2CooldownRemaining) / ARC_COOLDOWN_MS : 1}
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+        <!-- Score display -->
+        <div style="background: rgba(0, 0, 0, 0.7); border: 2px solid #557; border-radius: 8px; padding: 4px 12px; font-size: 14px; font-weight: bold; color: #aaf; text-align: center; min-width: 60px;">
+          {p2Score}
+        </div>
+        <!-- Shoot Arc button with progress bar -->
+        <div style="position: relative; width: 60px; height: 60px;">
+          <button
+            aria-label="Player 2 Shoot Arc"
+            aria-pressed={mobileP2ShootPressed}
+            disabled={p2OnCooldown}
+            on:pointerdown={() => { 
+              mobileP2ShootPressed = true;
+              if (!p2OnCooldown) {
+                useArcAbility(player2Angle, player2Layer, true);
+              }
+            }}
+            on:pointerup={() => { mobileP2ShootPressed = false; }}
+            on:pointerleave={() => { mobileP2ShootPressed = false; }}
+            on:pointercancel={() => { mobileP2ShootPressed = false; }}
+            style={`position: relative; background:${p2OnCooldown?'#334':mobileP2ShootPressed?'#779':'#557'}; color:${p2OnCooldown?'#668':'#fff'}; border:2px solid ${p2OnCooldown?'#446':mobileP2ShootPressed?'#aad':'#88a'}; border-radius:8px; width:100%; height:100%; font-size:24px; cursor:${p2OnCooldown?'not-allowed':'pointer'}; user-select:none; touch-action:none; box-shadow:${mobileP2ShootPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2ShootPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s; overflow: hidden;`}>
+            <span style="position: relative; z-index: 2;">🌊</span>
+            {#if p2OnCooldown}
+              <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 100%; background: linear-gradient(to top, rgba(170, 170, 255, 0.4) 0%, rgba(170, 170, 255, 0) 100%); border-radius: 6px; z-index: 1; transform: scaleY({p2Progress}); transform-origin: bottom; transition: transform 0.1s linear;"></div>
+            {/if}
+          </button>
+        </div>
+      </div>
+    {/if}
+  {/if}
 </div>
 {/if}
 
@@ -2853,6 +3297,13 @@
 <style>
   :global(html, body) { margin: 0; background: #111; }
   canvas { max-width: 100vw; max-height: 100vh; object-fit: contain; }
+  
+  @keyframes fadeOut {
+    0% { opacity: 1; }
+    70% { opacity: 1; }
+    100% { opacity: 0; visibility: hidden; }
+  }
+  
   /* Improve readability of the color dropdown in the dark debug panel */
   #debugPanel select {
     background: #333;
@@ -2872,70 +3323,143 @@
 </style>
 
 <!-- Local Co-op Panel (bottom-left, above highscores) -->
-<div style="position: absolute; bottom: {hsOpen ? '360px' : '60px'}; left: 10px; z-index: 9; transition: bottom 0.2s ease;">
-  {#if !localCoopEnabled}
-    <button 
-      on:click={startLocalCoop}
-      disabled={!localCoopSupported}
-      title={localCoopSupported ? 'PC: Använd numpad (8,4,6,2). Mobil: On-screen kontroller.' : 'Lokal flerspelarläge finns på kompatibla enheter'}
-      style="background: {localCoopSupported ? '#2d5016' : '#444'}; color: #fff; border: 1px solid {localCoopSupported ? '#4a7c26' : '#666'}; border-radius: 6px; padding: 8px 12px; cursor: {localCoopSupported ? 'pointer' : 'not-allowed'}; width: 320px; text-align: left; font-size: 14px; display: flex; align-items: center; gap: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
-      <span style="font-size: 18px;">🎮</span>
-      <span>Lokal Co-op (Spelare #2)</span>
+{#if browser && (emulateMobileTouch || navigator.maxTouchPoints > 0)}
+  <!-- Mobile: Square icon button on left side -->
+  <div style="position: absolute; bottom: 160px; left: 10px; z-index: 9;">
+    {#if !localCoopEnabled}
+      <button 
+        on:click={startLocalCoop}
+        disabled={!localCoopSupported}
+        title={localCoopSupported ? 'Add Player 2' : 'Not supported'}
+        style="background: {localCoopSupported ? '#2d5016' : '#444'}; color: #fff; border: 1px solid {localCoopSupported ? '#4a7c26' : '#666'}; border-radius: 8px; padding: 0; cursor: {localCoopSupported ? 'pointer' : 'not-allowed'}; width: 60px; height: 60px; font-size: 28px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.3); user-select: none; touch-action: none;">
+        🎮
+      </button>
+    {:else}
+      <button 
+        on:click={stopLocalCoop}
+        title="Remove Player 2"
+        style="background: #663333; color: #fff; border: 1px solid #884444; border-radius: 8px; padding: 0; cursor: pointer; width: 60px; height: 60px; font-size: 28px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.3); user-select: none; touch-action: none; position: relative;">
+        🎮
+        <span style="position: absolute; top: -4px; right: -4px; background: #d44; border-radius: 50%; width: 20px; height: 20px; font-size: 14px; line-height: 20px;">✕</span>
+      </button>
+    {/if}
+  </div>
+{:else}
+  <!-- Desktop: Full panel -->
+  <div style="position: absolute; bottom: {hsOpen ? '360px' : '60px'}; left: 10px; z-index: 9; transition: bottom 0.2s ease;">
+    {#if !localCoopEnabled}
+      <button 
+        on:click={startLocalCoop}
+        disabled={!localCoopSupported}
+        title={localCoopSupported ? 'PC: Använd numpad (8,4,6,2). Mobil: On-screen kontroller.' : 'Lokal flerspelarläge finns på kompatibla enheter'}
+        style="background: {localCoopSupported ? '#2d5016' : '#444'}; color: #fff; border: 1px solid {localCoopSupported ? '#4a7c26' : '#666'}; border-radius: 6px; padding: 8px 12px; cursor: {localCoopSupported ? 'pointer' : 'not-allowed'}; width: 320px; text-align: left; font-size: 14px; display: flex; align-items: center; gap: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
+        <span style="font-size: 18px;">🎮</span>
+        <span>Lokal Co-op (Spelare #2)</span>
+      </button>
+    {:else}
+      <div style="background: #1d3a1d; border: 1px solid #4a7c26; border-radius: 6px; padding: 10px 12px; width: 320px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="color: #fff; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 18px;">🎮</span>
+            <span>Spelare #2 Aktiv</span>
+          </span>
+          <button 
+            on:click={stopLocalCoop}
+            style="background: #663333; color: #fff; border: none; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 12px;">
+            Avsluta
+          </button>
+        </div>
+        <div style="color: #aaa; font-size: 12px;">
+          Layer: {player2Layer} | Speed Boost: +{player2SpeedBoost}%
+        </div>
+        <div style="color: #888; font-size: 11px; margin-top: 4px;">
+          {#if browser && navigator.maxTouchPoints > 0}
+            Kontroller på höger sida
+          {:else}
+            Numpad: 8↑ 2↓ 4← 6→
+          {/if}
+        </div>
+      </div>
+    {/if}
+  </div>
+{/if}
+
+<!-- Lifetime Highscores Panel (bottom-left) -->
+{#if browser && (emulateMobileTouch || navigator.maxTouchPoints > 0)}
+  <!-- Mobile: Square icon button on left side -->
+  <div style="position: absolute; bottom: 90px; left: 10px; z-index: 9;">
+    <button on:click={() => { hsOpen = !hsOpen; }}
+      title={hsOpen ? 'Hide Highscores' : 'Show Highscores'}
+      style="background:#333; color:#fff; border:1px solid #555; border-radius:8px; padding: 0; cursor:pointer; width: 60px; height: 60px; font-size: 28px; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.3); user-select: none; touch-action: none;">
+      🏆
     </button>
-  {:else}
-    <div style="background: #1d3a1d; border: 1px solid #4a7c26; border-radius: 6px; padding: 10px 12px; width: 320px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-        <span style="color: #fff; font-weight: 600; display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 18px;">🎮</span>
-          <span>Spelare #2 Aktiv</span>
-        </span>
-        <button 
-          on:click={stopLocalCoop}
-          style="background: #663333; color: #fff; border: none; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 12px;">
-          Avsluta
-        </button>
-      </div>
-      <div style="color: #aaa; font-size: 12px;">
-        Layer: {player2Layer} | Speed Boost: +{player2SpeedBoost}%
-      </div>
-      <div style="color: #888; font-size: 11px; margin-top: 4px;">
-        {#if browser && navigator.maxTouchPoints > 0}
-          Kontroller på höger sida
+  </div>
+  <!-- Mobile: Highscores panel (shown when open) -->
+  {#if hsOpen}
+    <div style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 100; width: 90%; max-width: 400px;">
+      <div style="background:#1d1d1d; color:#fff; padding:16px; border-radius:12px; box-shadow: 0 4px 20px rgba(0,0,0,.5);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <div style="font-weight:600; font-size: 18px;">🏆 Highscores</div>
+          <button on:click={() => { hsOpen = false; }}
+            style="background:#555; color:#fff; border:none; border-radius:6px; padding:8px 12px; cursor:pointer; font-size: 20px;">
+            ✕
+          </button>
+        </div>
+        {#if highscores.length === 0}
+          <div style="font-size:13px; opacity:.8;">No data yet.</div>
         {:else}
-          Numpad: 8↑ 2↓ 4← 6→
+          <div style="max-height: 60vh; overflow-y: auto;">
+            {#each highscores as h, i (h.id)}
+              {@const FlagComp = getFlagComponent(h.country)}
+              <div style="display:flex; align-items:center; gap:8px; padding:8px; border-bottom:1px solid #333; background:{i<3?'#252':'transparent'};"
+                   style:opacity={players.some(pl => pl.id === h.id) ? 1 : 0.55}
+                   title={`Last updated: ${h.lastUpdated?new Date(h.lastUpdated).toLocaleString():''}${h.country?`\nCountry: ${h.country}`:''}`}>
+                <div style="min-width:24px; font-weight:bold; color:{i===0?'#ffd700':i===1?'#c0c0c0':i===2?'#cd7f32':'#666'};">
+                  {i+1}.
+                </div>
+                {#if FlagComp}
+                  <svelte:component this={FlagComp} width="20" style="flex-shrink:0;" />
+                {/if}
+                <div style="flex:1; min-width:0;">
+                  {prettyName(h.id)}
+                </div>
+                <div style="font-weight:bold; color:#4f4;">{h.score}</div>
+                <div style="font-size:12px; opacity:.8;">Catches: {h.totalCatches || 0} · Evil hits: {h.evilHits || 0}</div>
+              </div>
+            {/each}
+          </div>
         {/if}
       </div>
     </div>
   {/if}
-</div>
-
-<!-- Lifetime Highscores Panel (bottom-left) -->
-<div style="position: absolute; bottom: 10px; left: 10px; z-index: 9;">
-  <button on:click={() => { hsOpen = !hsOpen; }}
-    style="background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:6px 10px; cursor:pointer; width: 320px; text-align:left; margin-bottom:6px;">
-    {hsOpen ? 'Hide Highscores' : 'Show Highscores'}
-  </button>
-  <div style="background:#1d1d1d; color:#fff; padding:10px 12px; border-radius:8px; width: 320px; box-shadow: 0 2px 10px rgba(0,0,0,.35);"
-       style:display={hsOpen ? 'block' : 'none'}
-       style:opacity={hsOpen ? 1 : 0}
-  >
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <div style="font-weight:600;">Lifetime Highscores</div>
-      {#if Date.now() - hsLastLoaded >= HS_RELOAD_COOLDOWN}
-        <button title="Reload (5 min cooldown)" on:click={reloadHighscoresIfAllowed}
-          style="background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:4px 8px; cursor:pointer;">
-          ⟳ Reload
-        </button>
+{:else}
+  <!-- Desktop: Full panel at bottom-left -->
+  <div style="position: absolute; bottom: 10px; left: 10px; z-index: 9;">
+    <button on:click={() => { hsOpen = !hsOpen; }}
+      style="background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:6px 10px; cursor:pointer; width: 320px; text-align:left; margin-bottom:6px;">
+      {hsOpen ? 'Hide Highscores' : 'Show Highscores'}
+    </button>
+    <div style="background:#1d1d1d; color:#fff; padding:10px 12px; border-radius:8px; width: 320px; box-shadow: 0 2px 10px rgba(0,0,0,.35);"
+         style:display={hsOpen ? 'block' : 'none'}
+         style:opacity={hsOpen ? 1 : 0}
+    >
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-weight:600;">Lifetime Highscores</div>
+        {#if Date.now() - hsLastLoaded >= HS_RELOAD_COOLDOWN}
+          <button title="Reload (5 min cooldown)" on:click={reloadHighscoresIfAllowed}
+            style="background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:4px 8px; cursor:pointer;">
+            ⟳ Reload
+          </button>
+        {:else}
+          <button title="Reload available soon" disabled
+            style="background:#222; color:#777; border:1px solid #444; border-radius:6px; padding:4px 8px; cursor:not-allowed;">
+            ⟳ Reload
+          </button>
+        {/if}
+      </div>
+      {#if highscores.length === 0}
+        <div style="font-size:13px; opacity:.8;">No data yet.</div>
       {:else}
-        <button title="Reload available soon" disabled
-          style="background:#222; color:#777; border:1px solid #444; border-radius:6px; padding:4px 8px; cursor:not-allowed;">
-          ⟳ Reload
-        </button>
-      {/if}
-    </div>
-    {#if highscores.length === 0}
-      <div style="font-size:13px; opacity:.8;">No data yet.</div>
-    {:else}
       <div style="max-height: 400px; overflow:auto;">
         {#each highscores as h, i (h.id)}
           {@const FlagComp = getFlagComponent(h.country)}
@@ -2959,8 +3483,9 @@
       </div>
       <div style="margin-top:6px; font-size:11px; opacity:.7;">Last updated: {new Date(hsLastLoaded).toLocaleTimeString()}</div>
     {/if}
+    </div>
   </div>
-</div>
+{/if}
 
 <!-- Custom Context Menu -->
 {#if showContextMenu}
