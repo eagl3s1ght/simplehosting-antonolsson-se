@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, pruneOldFlows, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, cleanupStaleBots, auth, db, ROOM, getHighScoresFirestore, savePlacementFirestore } from '$lib/firebase.js';
+  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, updateVipSkins, incrementScore, decrementScore, spawnFlow, pruneOldFlows, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, cleanupStaleBots, auth, db, ROOM, getHighScoresFirestore, savePlacementFirestore } from '$lib/firebase.js';
   import { ref, set, goOffline } from 'firebase/database';
   import { browser, dev } from '$app/environment';
 
@@ -859,6 +859,11 @@
       console.log('[Blur/Hidden] Saved setting to storage:', markInactiveOnWindowInactive);
       console.log('[Bot] Auto-spawn on join saved to storage:', autoSpawnBotOnJoin);
       console.log('[VIP] Saved settings to storage:', { vipGlow, vipGolden, vipBlackStars });
+    }
+    // Sync VIP skins to Firebase so other players can see them
+    if (myPlayer?.playerId) {
+      updateVipSkins(myPlayer.playerId, vipGlow, vipGolden, vipBlackStars);
+      console.log('[VIP] Synced skins to Firebase for player:', myPlayer.playerId, { vipGlow, vipGolden, vipBlackStars });
     }
   }
   const toggleDebug = dev ? () => { debugOpen = !debugOpen; } : () => {};
@@ -1737,6 +1742,11 @@
     }
     
     console.log('Player joined:', myPlayer.playerId);
+      
+      // Sync VIP skins to Firebase immediately after joining
+      updateVipSkins(myPlayer.playerId, vipGlow, vipGolden, vipBlackStars);
+      console.log('[VIP] Initial sync to Firebase:', { vipGlow, vipGolden, vipBlackStars });
+      
       // Start presence heartbeat (every 5s for better visibility)
       presenceInterval = setInterval(() => {
         if (myPlayer?.playerId) setLastSeen(myPlayer.playerId);
@@ -1754,6 +1764,16 @@
 
       unsubPlayers = listenPlayers(p => {
         players = p;
+        
+        // Debug: Log VIP skins from Firebase for all players
+        if (dev) {
+          players.forEach(pl => {
+            if (pl?.vipSkins && (pl.vipSkins.glow || pl.vipSkins.golden || pl.vipSkins.blackStars)) {
+              console.log('[VIP] Player', pl.id?.slice(0, 8), 'has VIP skins:', pl.vipSkins);
+            }
+          });
+        }
+        
         if (myPlayer) {
           // Check if my player was marked inactive
           const me = players.find(pl => pl.id === myPlayer!.playerId);
@@ -2279,20 +2299,23 @@
           // Check if this color is active
           const isActive = activeUsedColorsAll.has(idx);
           
-          // Check if this is my nest and apply VIP effects
-          const isMyNest = idx === myColorIndex && myPlayer;
-          let nestColor = colorData.hex;
+          // Find the player who owns this nest color (check all players including bots)
+          const nestOwner = players.find(p => p && p.colorIndex === idx);
           
-          if (isMyNest) {
-            if (vipGolden) {
-              nestColor = '#FFD700'; // Metallic gold
-            } else if (vipBlackStars) {
-              nestColor = '#000000'; // Black
-            }
+          // Check if this is my nest and get VIP effects
+          const isMyNest = idx === myColorIndex && myPlayer;
+          const nestVipGolden = isMyNest ? vipGolden : (nestOwner?.vipSkins?.golden || false);
+          const nestVipBlackStars = isMyNest ? vipBlackStars : (nestOwner?.vipSkins?.blackStars || false);
+          
+          let nestColor = colorData.hex;
+          if (nestVipGolden) {
+            nestColor = '#FFD700'; // Metallic gold
+          } else if (nestVipBlackStars) {
+            nestColor = '#000000'; // Black
           }
           
           // Draw main nest arc with low opacity (0.2) - nest background
-          if (isMyNest && vipGolden) {
+          if (nestVipGolden) {
             // Golden shimmer effect for nest
             ctx.globalAlpha = 0.3;
             const shimmerProgress = (now % 2500) / 2500; // 2.5 second cycle
@@ -2352,13 +2375,15 @@
           }
           
           // VIP Black Stars effect - draw stars on nest
-          if (isMyNest && vipBlackStars) {
+          if (nestVipBlackStars) {
             const numStars = 12;
             const arcLength = nestEndAngle - nestStartAngle;
+            // Use nest owner's player ID for seeding, or fallback to color index
+            const seedPlayerId = nestOwner?.id || String(idx);
             
             for (let i = 0; i < numStars; i++) {
               // Use player ID to seed pseudo-random but consistent positions
-              const seed = (myPlayer?.playerId.charCodeAt(i % (myPlayer?.playerId.length || 1)) || 0) + i + 100; // +100 to differentiate from fragment stars
+              const seed = (seedPlayerId.charCodeAt(i % (seedPlayerId.length || 1)) || 0) + i + 100; // +100 to differentiate from fragment stars
               const randomOffset = (Math.sin(seed) * 0.5 + 0.5); // 0 to 1
               const randomSize = (Math.cos(seed * 1.3) * 0.5 + 0.5); // 0 to 1
               const randomRotation = Math.sin(seed * 2.1) * Math.PI;
@@ -2406,7 +2431,7 @@
           
           // Draw collision border at 0.8 opacity if active (outer edge)
           if (isActive) {
-            if (isMyNest && vipGolden) {
+            if (nestVipGolden) {
               // Golden shimmer border
               ctx.globalAlpha = 0.9;
               const shimmerProgress = (now % 2500) / 2500;
@@ -2472,13 +2497,16 @@
   const cIndex = (isMyPlayer ? myColorIndex : p.colorIndex);
   let color = (cIndex != null && PLAYER_COLORS[cIndex]) ? PLAYER_COLORS[cIndex].hex : '#888';
         
-        // Apply VIP effects for my player
-        if (isMyPlayer) {
-          if (vipGolden) {
-            color = '#FFD700'; // Metallic gold
-          } else if (vipBlackStars) {
-            color = '#000000'; // Black
-          }
+        // Get player's VIP skins (either from local settings or from player data in Firebase)
+        const playerVipGlow = isMyPlayer ? vipGlow : (p.vipSkins?.glow || false);
+        const playerVipGolden = isMyPlayer ? vipGolden : (p.vipSkins?.golden || false);
+        const playerVipBlackStars = isMyPlayer ? vipBlackStars : (p.vipSkins?.blackStars || false);
+        
+        // Apply VIP effects
+        if (playerVipGolden) {
+          color = '#FFD700'; // Metallic gold
+        } else if (playerVipBlackStars) {
+          color = '#000000'; // Black
         }
         
   // Get player's layer and corresponding radius
@@ -2488,7 +2516,7 @@
     const layerRadius = scaledInnerR + scaledLayerSpacing * (playerLayer + 1);
         
         // VIP Glow effect (add outer glow)
-        if (isMyPlayer && vipGlow) {
+        if (playerVipGlow) {
           ctx.save();
           ctx.shadowColor = color;
           ctx.shadowBlur = 30 * scaleFactor;
@@ -2510,7 +2538,7 @@
         const endA = normalizeAngle(angle + PIPE_WIDTH / 2);
         
         // VIP Golden shimmer effect
-        if (isMyPlayer && vipGolden) {
+        if (playerVipGolden) {
           // Create animated shimmer gradient
           const shimmerProgress = (now % 2500) / 2500; // 2.5 second cycle
           
@@ -2580,13 +2608,15 @@
         }
         
         // VIP Black Stars effect - draw stars on the fragment
-        if (isMyPlayer && vipBlackStars) {
+        if (playerVipBlackStars) {
           const numStars = 12; // More stars for better coverage
           const arcLength = endA - startA;
+          // Use the actual player's ID for seeding
+          const seedPlayerId = p.id || '';
           
           for (let i = 0; i < numStars; i++) {
             // Use player ID to seed pseudo-random but consistent positions
-            const seed = (myPlayer?.playerId.charCodeAt(i % (myPlayer?.playerId.length || 1)) || 0) + i;
+            const seed = (seedPlayerId.charCodeAt(i % (seedPlayerId.length || 1)) || 0) + i;
             const randomOffset = (Math.sin(seed) * 0.5 + 0.5); // 0 to 1
             const randomSize = (Math.cos(seed * 1.3) * 0.5 + 0.5); // 0 to 1
             const randomRotation = Math.sin(seed * 2.1) * Math.PI;
@@ -2868,8 +2898,12 @@
         
         // Color based on player, with VIP golden override for player 1
         let arcColor = arc.isPlayer2 ? 'rgba(100, 150, 255, ' : 'rgba(255, 200, 0, ';
-        if (!arc.isPlayer2 && vipGolden) {
-          arcColor = 'rgba(255, 215, 0, '; // Golden arc
+        if (!arc.isPlayer2) {
+          // Check if player 1 has VIP golden skin
+          const arcOwnerVipGolden = myPlayer ? vipGolden : false;
+          if (arcOwnerVipGolden) {
+            arcColor = 'rgba(255, 215, 0, '; // Golden arc
+          }
         }
         
         // Draw the flowing wave across all potentially visible layers (moving inward toward sun)
@@ -3077,7 +3111,7 @@
         const isMobile = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
         const dotSize = 12;
         const gap = 6;
-        const margin = 12;
+        const margin = 60; // Increased from 12 to 60 to avoid overlapping with top buttons
         const panelPadding = 8;
         
         // Count different player types
@@ -3793,7 +3827,7 @@
   
   <!-- Scoreboard Overlay (top-left of canvas) -->
   <div style="position: absolute; top: 0; left: 0; pointer-events: none; width: 100%; height: 100%;">
-    <div style="position: absolute; top: 2.5%; left: 2.5%; pointer-events: auto;">
+    <div style="position: absolute; top: 60px; left: 2.5%; pointer-events: auto;">
       <div style="font-family: Arial, sans-serif; color: #fff; font-size: 2.2vmin; font-weight: bold; margin-bottom: 1vmin; opacity: 0.9;">
         Scores
       </div>

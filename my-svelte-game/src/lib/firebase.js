@@ -247,6 +247,29 @@ export function updateColor(playerId, colorIndex) {
   }
 }
 
+/** @param {string} playerId 
+  * @param {boolean} vipGlow 
+  * @param {boolean} vipGolden 
+  * @param {boolean} vipBlackStars */
+export function updateVipSkins(playerId, vipGlow, vipGolden, vipBlackStars) {
+  if (!playerId) {
+    console.warn('Invalid updateVipSkins call: no playerId');
+    return;
+  }
+  try {
+    set(ref(db, `${ROOM}/players/${playerId}/vipSkins`), {
+      glow: vipGlow || false,
+      golden: vipGolden || false,
+      blackStars: vipBlackStars || false
+    }).catch(err => {
+      console.warn('Failed to update VIP skins:', err.message);
+    });
+  } catch (err) {
+    if (err instanceof Error) console.warn('updateVipSkins error:', err.message);
+    else console.warn('updateVipSkins error:', err);
+  }
+}
+
 /** @param {string} playerId */
 export function incrementScore(playerId) {
   runTransaction(ref(db, `${ROOM}/players/${playerId}`), (player) => {
