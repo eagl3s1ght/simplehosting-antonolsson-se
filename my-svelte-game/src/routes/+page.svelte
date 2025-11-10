@@ -1505,17 +1505,6 @@
     const difficultyInterval = setInterval(() => {
       if (pauseForNoPlayers) return; // freeze difficulty while paused
       if (difficulty < 10) {
-        // Before increasing difficulty, check for inactive players (no angle change since last difficulty)
-        players.forEach((pl) => {
-          if (!pl || !pl.id || !myPlayer || pl.id === myPlayer.playerId) return;
-          const lastAngle = lastKnownAngles.get(pl.id);
-          const currentAngle = pl.angle;
-          if (lastAngle !== undefined && Math.abs(currentAngle - lastAngle) < 0.0001) {
-            // Player hasn't moved since last difficulty change; mark inactive
-            try { setPlayerActive(pl.id, false); } catch (e) { console.warn('Failed to mark player inactive:', pl.id, e); }
-            console.log(`[Difficulty] Marking player ${prettyName(pl.id)} inactive (no movement)`);
-          }
-        });
         difficulty++;
         difficultyLastAutoIncreaseAt = Date.now();
         pauseAccumAtDiffStart = pauseAccumulatedMs;
@@ -2127,10 +2116,8 @@
       activeArcs.forEach(arc => {
         const progress = (nowMs - arc.startTime) / arc.duration;
         
-        // Calculate player fragment size (each player gets an equal slice of the circle)
-        const fragmentAngularWidth = (Math.PI * 2) / PLAYER_COLORS.length;
-        // Make arc wider - 2x fragment width for better coverage
-        const arcAngularWidth = fragmentAngularWidth * 2.0;
+        // Arc width matches player fragment width (PIPE_WIDTH)
+        const arcAngularWidth = PIPE_WIDTH;
         
         // Arc flows forward - starting at player layer, moving INWARD toward sun to intercept flows
         const startLayerRadius = scaledInnerR + scaledLayerSpacing * arc.playerLayer;
@@ -2193,22 +2180,25 @@
         }
       });
 
-      // Arc collision detection - check flows as the wave passes through (any layer)
+      // Arc collision detection - check flows only when the wave reaches them
       if (activeArcs.length > 0) {
-        const fragmentAngularWidth = (Math.PI * 2) / PLAYER_COLORS.length;
-        // Make arc wider - 2x fragment width for better coverage
-        const arcAngularWidth = fragmentAngularWidth * 2.0;
+        const arcAngularWidth = PIPE_WIDTH; // Match visual arc width
         
         console.log('[Arc] Active arcs:', activeArcs.length, 'Flow cache size:', flowCache.size);
         
         activeArcs.forEach(arc => {
           const progress = (nowMs - arc.startTime) / arc.duration;
           
+          // Calculate where the wave currently is
+          const layerSpan = 3;
+          const waveCenter = arc.playerLayer - progress * layerSpan; // Moves from playerLayer toward 0
+          const waveWidth = 1.5; // How wide the wave is (in layers)
+          
           let checkedCount = 0;
           let evilCount = 0;
           let passedAngleCheck = 0;
           
-          // Check all flows in flowCache (ignoring layer)
+          // Check all flows in flowCache
           flowCache.forEach((flow, flowId) => {
             checkedCount++;
             
@@ -2218,8 +2208,15 @@
             if (arc.destroyedFlows.has(flowId)) return;
             
             const flowAngle = flow.angle;
+            const flowLayer = flow.layer ?? 0;
             
-            // Check angle only
+            // Check if wave has reached this flow's layer
+            const distanceFromWave = Math.abs(flowLayer - waveCenter);
+            
+            // Only destroy if wave is at this layer (within wave width)
+            if (distanceFromWave > waveWidth) return;
+            
+            // Check angle
             const angleDiff = Math.abs(normalizeAngle(flowAngle - arc.playerAngle));
             const normalizedDiff = angleDiff > Math.PI ? 2 * Math.PI - angleDiff : angleDiff;
             const arcHalfWidth = arcAngularWidth / 2;
@@ -2228,6 +2225,9 @@
             if (evilCount <= 3) {
               console.log('[Arc] Checking evil flow:', {
                 flowId,
+                flowLayer,
+                waveCenter: waveCenter.toFixed(2),
+                distanceFromWave: distanceFromWave.toFixed(2),
                 flowAngle: (flowAngle * 180 / Math.PI).toFixed(1) + '°',
                 arcAngle: (arc.playerAngle * 180 / Math.PI).toFixed(1) + '°',
                 normalizedDiff: (normalizedDiff * 180 / Math.PI).toFixed(1) + '°',
@@ -2248,7 +2248,9 @@
               console.log('[Arc] 💥 DESTROYING FLOW!', {
                 flowId,
                 dbKey,
-                flowLayer: flow.layer ?? 0,
+                flowLayer,
+                waveCenter: waveCenter.toFixed(2),
+                distanceFromWave: distanceFromWave.toFixed(2),
                 flowAngle: (flowAngle * 180 / Math.PI).toFixed(1) + '°',
                 arcAngle: (arc.playerAngle * 180 / Math.PI).toFixed(1) + '°',
                 angleDiff: (normalizedDiff * 180 / Math.PI).toFixed(1) + '°',
