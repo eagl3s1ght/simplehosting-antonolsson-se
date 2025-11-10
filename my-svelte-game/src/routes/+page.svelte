@@ -197,6 +197,16 @@
   let backgroundMusic: HTMLAudioElement | null = null;
   let isMusicPlaying = false;
   
+  // YouTube player state
+  let youtubePlayer: any = null;
+  let isYouTubeReady = false;
+  let musicVolume = 15; // Default volume 0-100
+  let currentMusicIndex = 0; // 0 = lofi, 1 = chillstep
+  const musicTracks = [
+    { id: 'HuFYqnbVbzY', name: 'Lofi Hip Hop Radio' },
+    { id: 'cWuzJBboQyE', name: 'Chillstep Radio' }
+  ];
+  
   // Bot player state
   // Bot players
   let botPlayers: Map<string, { playerId: string; angle: number; layer: number; colorIndex: number | null; speedBoost: number; lastUpdateTime?: number; lastPresenceTime?: number }> = new Map();
@@ -217,6 +227,11 @@
   // Scoreboard data for HTML overlay (with flags)
   type ScoreboardEntry = { id: string; name: string; score: number; hits: number; country: string | null; color: string; active: boolean; };
   let scoreboardList: ScoreboardEntry[] = [];
+  
+  // VIP Features (toggleable in debug menu)
+  let vipGlow = false;
+  let vipGolden = false;
+  let vipBlackStars = false;
   
   // Nest render logging flag (log only once)
   let nestRenderLogged = false;
@@ -402,6 +417,13 @@
     showContextMenu = false;
   }
   
+  function openContextMenu() {
+    // Position menu in center of screen or near a button
+    contextMenuX = window.innerWidth / 2 - 100;
+    contextMenuY = window.innerHeight / 2 - 100;
+    showContextMenu = true;
+  }
+  
   function becomeInactive() {
     if (myPlayer?.playerId) {
       try { 
@@ -420,13 +442,94 @@
   }
   
   function toggleBackgroundMusic() {
-    if (!backgroundMusic) {
-      // YouTube video ID: HuFYqnbVbzY
-      // Using a converted audio URL or iframe embed won't work directly
-      // Instead, we'll open it in a new tab for now
-      window.open('https://www.youtube.com/watch?v=HuFYqnbVbzY', '_blank');
+    if (!youtubePlayer) {
+      // Initialize YouTube player if not already created
+      if (isYouTubeReady) {
+        createYouTubePlayer();
+      } else {
+        // Load YouTube API if not loaded yet
+        loadYouTubeAPI();
+      }
+    } else {
+      // Toggle play/pause
+      if (isMusicPlaying) {
+        youtubePlayer.pauseVideo();
+        isMusicPlaying = false;
+      } else {
+        youtubePlayer.playVideo();
+        isMusicPlaying = true;
+      }
     }
     closeContextMenu();
+  }
+  
+  function switchMusicTrack() {
+    currentMusicIndex = (currentMusicIndex + 1) % musicTracks.length;
+    if (youtubePlayer) {
+      const track = musicTracks[currentMusicIndex];
+      youtubePlayer.loadVideoById({
+        videoId: track.id,
+        startSeconds: 0
+      });
+      // Update playlist for looping
+      youtubePlayer.setLoop(true);
+      isMusicPlaying = true;
+      console.log('[Music] Switched to:', track.name);
+    }
+    closeContextMenu();
+  }
+  
+  function loadYouTubeAPI() {
+    if (typeof window === 'undefined') return;
+    
+    // Check if API is already loaded
+    if ((window as any).YT && (window as any).YT.Player) {
+      isYouTubeReady = true;
+      createYouTubePlayer();
+      return;
+    }
+    
+    // Load YouTube IFrame API
+    const tag = document.createElement('script');
+    tag.src = 'https://www.youtube.com/iframe_api';
+    const firstScriptTag = document.getElementsByTagName('script')[0];
+    firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+    
+    // Set up callback for when API is ready
+    (window as any).onYouTubeIframeAPIReady = () => {
+      isYouTubeReady = true;
+      createYouTubePlayer();
+      console.log('[Music] YouTube API ready, auto-starting music');
+    };
+  }
+  
+  function createYouTubePlayer() {
+    if (!isYouTubeReady || youtubePlayer) return;
+    
+    const track = musicTracks[currentMusicIndex];
+    youtubePlayer = new (window as any).YT.Player('youtube-player', {
+      height: '0',
+      width: '0',
+      videoId: track.id,
+      playerVars: {
+        autoplay: 1,
+        controls: 0,
+        loop: 1,
+        playlist: track.id // Required for looping
+      },
+      events: {
+        onReady: (event: any) => {
+          event.target.setVolume(musicVolume);
+          event.target.playVideo();
+          isMusicPlaying = true;
+          console.log('[Music] YouTube player ready and playing:', track.name);
+        },
+        onStateChange: (event: any) => {
+          // YT.PlayerState.PLAYING = 1, PAUSED = 2
+          isMusicPlaying = event.data === 1;
+        }
+      }
+    });
   }
   
   // Local co-op functions
@@ -594,7 +697,44 @@
         autoSpawnBotOnJoin = autoSpawnBotSaved === '1';
         console.log('[Bot] Auto-spawn on join loaded from storage:', autoSpawnBotOnJoin);
       }
+      // Load VIP settings
+      const vipGlowSaved = localStorage.getItem('vipGlow');
+      if (vipGlowSaved !== null) {
+        vipGlow = vipGlowSaved === '1';
+        console.log('[VIP] Loaded glow setting from storage:', vipGlow);
+      }
+      const vipGoldenSaved = localStorage.getItem('vipGolden');
+      if (vipGoldenSaved !== null) {
+        vipGolden = vipGoldenSaved === '1';
+        console.log('[VIP] Loaded golden setting from storage:', vipGolden);
+      }
+      const vipBlackStarsSaved = localStorage.getItem('vipBlackStars');
+      if (vipBlackStarsSaved !== null) {
+        vipBlackStars = vipBlackStarsSaved === '1';
+        console.log('[VIP] Loaded black stars setting from storage:', vipBlackStars);
+      }
+      // Load music volume
+      const volumeSaved = localStorage.getItem('musicVolume');
+      if (volumeSaved !== null) {
+        const vol = parseInt(volumeSaved);
+        if (!isNaN(vol) && vol >= 0 && vol <= 100) {
+          musicVolume = vol;
+          console.log('[Music] Loaded volume from storage:', musicVolume);
+        }
+      }
+      // Load music track index
+      const trackSaved = localStorage.getItem('currentMusicIndex');
+      if (trackSaved !== null) {
+        const track = parseInt(trackSaved);
+        if (!isNaN(track) && track >= 0 && track < musicTracks.length) {
+          currentMusicIndex = track;
+          console.log('[Music] Loaded track index from storage:', currentMusicIndex);
+        }
+      }
       storageLoaded = true;
+      
+      // Auto-start YouTube API
+      loadYouTubeAPI();
     }
     // Try to load external libs dynamically (non-blocking)
     import('unique-names-generator').then((m) => { uniqGen = m.uniqueNamesGenerator; dictAdj = m.adjectives; dictAnimals = m.animals; }).catch(() => {});
@@ -662,10 +802,16 @@
     localStorage.setItem('idleEnabled', idleEnabled ? '1' : '0');
     localStorage.setItem('markInactiveOnWindowInactive', markInactiveOnWindowInactive ? '1' : '0');
     localStorage.setItem('autoSpawnBotOnJoin', autoSpawnBotOnJoin ? '1' : '0');
+    localStorage.setItem('vipGlow', vipGlow ? '1' : '0');
+    localStorage.setItem('vipGolden', vipGolden ? '1' : '0');
+    localStorage.setItem('vipBlackStars', vipBlackStars ? '1' : '0');
+    localStorage.setItem('musicVolume', String(musicVolume));
+    localStorage.setItem('currentMusicIndex', String(currentMusicIndex));
     if (dev) {
       console.log('[Idle] Saved setting to storage:', idleEnabled);
       console.log('[Blur/Hidden] Saved setting to storage:', markInactiveOnWindowInactive);
       console.log('[Bot] Auto-spawn on join saved to storage:', autoSpawnBotOnJoin);
+      console.log('[VIP] Saved settings to storage:', { vipGlow, vipGolden, vipBlackStars });
     }
   }
   const toggleDebug = dev ? () => { debugOpen = !debugOpen; } : () => {};
@@ -1915,19 +2061,59 @@
           // Check if this color is active
           const isActive = activeUsedColorsAll.has(idx);
           
+          // Check if this is my nest and apply VIP effects
+          const isMyNest = idx === myColorIndex && myPlayer;
+          let nestColor = colorData.hex;
+          
+          if (isMyNest) {
+            if (vipGolden) {
+              nestColor = '#FFD700'; // Metallic gold
+            } else if (vipBlackStars) {
+              nestColor = '#000000'; // Black
+            }
+          }
+          
           // Draw main nest arc with low opacity (0.2) - nest background
           ctx.globalAlpha = 0.2;
-          ctx.strokeStyle = colorData.hex;
+          ctx.strokeStyle = nestColor;
           ctx.lineWidth = 25 * scaleFactor;
           ctx.lineCap = 'butt'; // Square caps so nests connect seamlessly
           ctx.beginPath();
           ctx.arc(gameCenterX, gameCenterY, outermostRadius, nestStartAngle, nestEndAngle);
           ctx.stroke();
           
+          // VIP Black Stars effect - draw stars on nest
+          if (isMyNest && vipBlackStars) {
+            ctx.globalAlpha = 0.6;
+            const numStars = 12;
+            for (let i = 0; i < numStars; i++) {
+              const starAngle = nestStartAngle + (nestEndAngle - nestStartAngle) * (i / numStars);
+              const starX = gameCenterX + Math.cos(starAngle) * outermostRadius;
+              const starY = gameCenterY + Math.sin(starAngle) * outermostRadius;
+              const starSize = 1.5 * scaleFactor;
+              
+              // Draw a small white star
+              ctx.save();
+              ctx.translate(starX, starY);
+              ctx.fillStyle = '#ffffff';
+              ctx.beginPath();
+              for (let j = 0; j < 5; j++) {
+                const pointAngle = (j * 2 * Math.PI) / 5 - Math.PI / 2;
+                const x = Math.cos(pointAngle) * starSize;
+                const y = Math.sin(pointAngle) * starSize;
+                if (j === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+              }
+              ctx.closePath();
+              ctx.fill();
+              ctx.restore();
+            }
+          }
+          
           // Draw collision border at 0.8 opacity if active (outer edge)
           if (isActive) {
             ctx.globalAlpha = 0.8;
-            ctx.strokeStyle = colorData.hex;
+            ctx.strokeStyle = nestColor;
             ctx.lineWidth = 4 * scaleFactor;
             ctx.lineCap = 'butt';
             ctx.beginPath();
@@ -1960,7 +2146,16 @@
         
     // Use palette color if assigned (use myColorIndex for my player)
   const cIndex = (isMyPlayer ? myColorIndex : p.colorIndex);
-  const color = (cIndex != null && PLAYER_COLORS[cIndex]) ? PLAYER_COLORS[cIndex].hex : '#888';
+  let color = (cIndex != null && PLAYER_COLORS[cIndex]) ? PLAYER_COLORS[cIndex].hex : '#888';
+        
+        // Apply VIP effects for my player
+        if (isMyPlayer) {
+          if (vipGolden) {
+            color = '#FFD700'; // Metallic gold
+          } else if (vipBlackStars) {
+            color = '#000000'; // Black
+          }
+        }
         
   // Get player's layer and corresponding radius
   // For the current player, use smooth visual layer; for others use their actual layer
@@ -1968,6 +2163,24 @@
     // Use fixed layer spacing - layers are numbered 0-11, where 11 is outermost
     const layerRadius = scaledInnerR + scaledLayerSpacing * (playerLayer + 1);
         
+        // VIP Glow effect (add outer glow)
+        if (isMyPlayer && vipGlow) {
+          ctx.save();
+          ctx.shadowColor = color;
+          ctx.shadowBlur = 30 * scaleFactor;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 25 * scaleFactor;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          const angle = myAngle;
+          const startA = normalizeAngle(angle - PIPE_WIDTH / 2);
+          const endA = normalizeAngle(angle + PIPE_WIDTH / 2);
+          ctx.arc(gameCenterX, gameCenterY, layerRadius, startA, endA);
+          ctx.stroke();
+          ctx.restore();
+        }
+        
+        // Main player fragment
         ctx.strokeStyle = color;
         ctx.lineWidth = 25 * scaleFactor;
         ctx.lineCap = 'round';
@@ -1977,6 +2190,33 @@
         const endA = normalizeAngle(angle + PIPE_WIDTH / 2);
     ctx.arc(gameCenterX, gameCenterY, layerRadius, startA, endA);
         ctx.stroke();
+        
+        // VIP Black Stars effect - draw stars on the fragment
+        if (isMyPlayer && vipBlackStars) {
+          const numStars = 8;
+          for (let i = 0; i < numStars; i++) {
+            const starAngle = startA + (endA - startA) * (i / (numStars - 1));
+            const starX = gameCenterX + Math.cos(starAngle) * layerRadius;
+            const starY = gameCenterY + Math.sin(starAngle) * layerRadius;
+            const starSize = 2 * scaleFactor;
+            
+            // Draw a small white star
+            ctx.save();
+            ctx.translate(starX, starY);
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            for (let j = 0; j < 5; j++) {
+              const pointAngle = (j * 2 * Math.PI) / 5 - Math.PI / 2;
+              const x = Math.cos(pointAngle) * starSize;
+              const y = Math.sin(pointAngle) * starSize;
+              if (j === 0) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+          }
+        }
 
         // Accent ring
         ctx.lineWidth = 8 * scaleFactor;
@@ -2130,8 +2370,11 @@
         const startAngle = arc.playerAngle - arcAngularWidth / 2;
         const endAngle = arc.playerAngle + arcAngularWidth / 2;
         
-        // Color based on player
-        const arcColor = arc.isPlayer2 ? 'rgba(100, 150, 255, ' : 'rgba(255, 200, 0, ';
+        // Color based on player, with VIP golden override for player 1
+        let arcColor = arc.isPlayer2 ? 'rgba(100, 150, 255, ' : 'rgba(255, 200, 0, ';
+        if (!arc.isPlayer2 && vipGolden) {
+          arcColor = 'rgba(255, 215, 0, '; // Golden arc
+        }
         
         // Draw the flowing wave across all potentially visible layers (moving inward toward sun)
         for (let checkLayer = arc.playerLayer; checkLayer >= Math.max(0, arc.playerLayer - layerSpan); checkLayer--) {
@@ -2620,9 +2863,32 @@
 
 <!-- REMOVED: MigrationButton - migration complete, now using Firestore -->
 
+<!-- Menu Button (always visible top-left) -->
+<div style="position: absolute; top: 10px; left: 10px; z-index: 10;">
+  <button on:click|stopPropagation={openContextMenu} style="background:#2a4a2a; color:#fff; border:none; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:16px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+    ☰ Menu
+  </button>
+</div>
+
+<!-- Music Control Button (top-left, below menu) -->
+{#if youtubePlayer}
+<div style="position: absolute; top: 60px; left: 10px; z-index: 10; display: flex; flex-direction: column; gap: 4px;">
+  <button 
+    on:click|stopPropagation={toggleBackgroundMusic}
+    style="background:#1a1a2a; color:#fff; border:1px solid #3a3a5a; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:20px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); line-height: 1;"
+    title={isMusicPlaying ? 'Pause Music' : 'Play Music'}
+  >
+    {isMusicPlaying ? '⏸️' : '▶️'}
+  </button>
+  <div style="font-size: 10px; color: #aaa; text-align: center; background: rgba(0,0,0,0.5); padding: 2px 4px; border-radius: 4px;">
+    {musicTracks[currentMusicIndex].name}
+  </div>
+</div>
+{/if}
+
 {#if dev}
 <div style="position: absolute; top: 10px; right: 10px; z-index: 10;">
-  <button on:click={toggleDebug} style="background:#333; color:#fff; border:none; border-radius:6px; padding:6px 10px; cursor:pointer; margin-bottom:6px; width:100%;">
+  <button on:click={toggleDebug} style="background:#333; color:#fff; border:none; border-radius:6px; padding:6px 10px; cursor:pointer; width:100%;">
     {debugOpen ? 'Hide Debug' : 'Show Debug'}
   </button>
   <div id="debugPanel" style="background: #222; color: #fff; padding: 12px 18px; border-radius: 8px; width: 300px; max-height: 600px; overflow-y: auto; transition: opacity 0.25s ease;"
@@ -2715,6 +2981,22 @@
         </div>
       {/if}
     {/if}
+  </div>
+  
+  <div style="margin-top: 12px; background: #1a1a2a; padding: 10px; border-radius: 6px; border: 1px solid #3a3a5a;">
+    <b style="color: #ffd700;">✨ VIP Features</b>
+    <label style="display:flex; align-items:center; gap:6px; margin-top:8px; font-size:12px;">
+      <input type="checkbox" bind:checked={vipGlow} />
+      Player Glow
+    </label>
+    <label style="display:flex; align-items:center; gap:6px; margin-top:6px; font-size:12px;">
+      <input type="checkbox" bind:checked={vipGolden} on:change={() => { if (vipGolden) vipBlackStars = false; }} />
+      Golden Arc (metallic gold player & nest)
+    </label>
+    <label style="display:flex; align-items:center; gap:6px; margin-top:6px; font-size:12px;">
+      <input type="checkbox" bind:checked={vipBlackStars} on:change={() => { if (vipBlackStars) vipGolden = false; }} />
+      Black Stars Fragment (starfield player & nest)
+    </label>
   </div>
   
   <div style="margin-top: 12px; font-size: 14px;">
@@ -3348,6 +3630,34 @@
     background: #2a2a2a;
     color: #fff;
   }
+  
+  /* Context menu items */
+  .context-menu-item {
+    display: block;
+    width: 100%;
+    padding: 10px 16px;
+    background: transparent;
+    border: none;
+    border-top: 1px solid #444;
+    color: #fff;
+    text-align: left;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background 0.1s;
+  }
+  
+  .context-menu-item:first-child {
+    border-top: none;
+  }
+  
+  .context-menu-item:hover:not(:disabled) {
+    background: #3a3a3a;
+  }
+  
+  .context-menu-item:disabled {
+    color: #666;
+    cursor: not-allowed;
+  }
 </style>
 
 <!-- Local Co-op Panel (bottom-left, above highscores) -->
@@ -3537,63 +3847,54 @@
   >
     <button
       on:click={becomeInactive}
-      style="
-        display: block;
-        width: 100%;
-        padding: 10px 16px;
-        background: transparent;
-        border: none;
-        color: #fff;
-        text-align: left;
-        cursor: pointer;
-        font-size: 14px;
-      "
-      on:mouseenter={(e) => e.currentTarget.style.background = '#3a3a3a'}
-      on:mouseleave={(e) => e.currentTarget.style.background = 'transparent'}
+      class="context-menu-item"
     >
       Become Inactive
     </button>
     
     <button
       on:click={mailtoAuthor}
-      style="
-        display: block;
-        width: 100%;
-        padding: 10px 16px;
-        background: transparent;
-        border: none;
-        color: #fff;
-        text-align: left;
-        cursor: pointer;
-        font-size: 14px;
-        border-top: 1px solid #444;
-      "
-      on:mouseenter={(e) => e.currentTarget.style.background = '#3a3a3a'}
-      on:mouseleave={(e) => e.currentTarget.style.background = 'transparent'}
+      class="context-menu-item"
     >
       Contact Author
     </button>
     
     <button
       on:click={toggleBackgroundMusic}
-      style="
-        display: block;
-        width: 100%;
-        padding: 10px 16px;
-        background: transparent;
-        border: none;
-        color: #fff;
-        text-align: left;
-        cursor: pointer;
-        font-size: 14px;
-        border-top: 1px solid #444;
-      "
-      on:mouseenter={(e) => e.currentTarget.style.background = '#3a3a3a'}
-      on:mouseleave={(e) => e.currentTarget.style.background = 'transparent'}
+      disabled={!isYouTubeReady && !youtubePlayer}
+      class="context-menu-item"
     >
-      Play Background Music
+      {isMusicPlaying ? '⏸️ Pause' : '▶️ Play'} Background Music
     </button>
+    
+    <button
+      on:click={switchMusicTrack}
+      disabled={!youtubePlayer}
+      class="context-menu-item"
+    >
+      🔀 Switch Track ({musicTracks[currentMusicIndex].name})
+    </button>
+    
+    {#if youtubePlayer}
+      <div style="padding: 10px 16px; border-top: 1px solid #444;">
+        <div style="font-size: 12px; color: #aaa; display: block; margin-bottom: 4px;">
+          Volume: {musicVolume}%
+        </div>
+        <input 
+          type="range" 
+          min="0" 
+          max="100" 
+          bind:value={musicVolume}
+          on:input={() => youtubePlayer?.setVolume(musicVolume)}
+          style="width: 100%;"
+          aria-label="Volume control"
+        />
+      </div>
+    {/if}
   </div>
 {/if}
+
+<!-- Hidden YouTube Player -->
+<div id="youtube-player" style="display: none;"></div>
 
 <svelte:window on:click={closeContextMenu} />
