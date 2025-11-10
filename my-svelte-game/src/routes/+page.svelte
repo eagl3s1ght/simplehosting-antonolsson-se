@@ -1685,7 +1685,7 @@
         
         // Player 2 controls (numpad on PC, mobile buttons on touch devices)
         if (localCoopEnabled && player2Active && player2Player) {
-          const hasTouch = navigator.maxTouchPoints > 0;
+          const hasTouch = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
           const effectiveP2Speed = debugSpeed * (1 + player2SpeedBoost * 0.01);
           
           // Rotation controls
@@ -2624,7 +2624,7 @@
 {/if}
 
 <!-- Mobile Controls (bottom-center) -->
-{#if emulateMobileTouch || navigator.maxTouchPoints > 0}
+{#if browser && (emulateMobileTouch || navigator.maxTouchPoints > 0)}
 <div style="position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px;">
   <!-- Up button -->
   <button
@@ -2674,7 +2674,7 @@
 {/if}
 
 <!-- Player 2 Mobile Controls (only show on touch devices when local coop is active) -->
-{#if localCoopEnabled && player2Active && (emulateMobileTouch || navigator.maxTouchPoints > 0)}
+{#if browser && localCoopEnabled && player2Active && (emulateMobileTouch || navigator.maxTouchPoints > 0)}
 <div style="position: absolute; top: 10px; left: 50%; transform: translateX(-50%) rotate(180deg); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px; opacity: 0.8;">
   <div style="font-size: 12px; color: #fff; text-align: center; margin-bottom: 4px;">P2</div>
   <!-- Up button -->
@@ -2899,7 +2899,7 @@
         Layer: {player2Layer} | Speed Boost: +{player2SpeedBoost}%
       </div>
       <div style="color: #888; font-size: 11px; margin-top: 4px;">
-        {#if navigator.maxTouchPoints > 0}
+        {#if browser && navigator.maxTouchPoints > 0}
           Kontroller på höger sida
         {:else}
           Numpad: 8↑ 2↓ 4← 6→
