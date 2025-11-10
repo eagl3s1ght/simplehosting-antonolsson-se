@@ -482,9 +482,11 @@
       if (isMusicPlaying) {
         youtubePlayer.pauseVideo();
         isMusicPlaying = false;
+        localStorage.setItem('isMusicPlaying', '0');
       } else {
         youtubePlayer.playVideo();
         isMusicPlaying = true;
+        localStorage.setItem('isMusicPlaying', '1');
       }
     }
     closeContextMenu();
@@ -501,6 +503,7 @@
       // Update playlist for looping
       youtubePlayer.setLoop(true);
       isMusicPlaying = true;
+      localStorage.setItem('isMusicPlaying', '1');
       console.log('[Music] Switched to:', track.name);
     }
     closeContextMenu();
@@ -533,13 +536,17 @@
   function createYouTubePlayer() {
     if (!isYouTubeReady || youtubePlayer) return;
     
+    // Check if music was playing before (e.g., from page refresh)
+    const musicPlayingSaved = localStorage.getItem('isMusicPlaying');
+    const shouldAutoplay = musicPlayingSaved === '1';
+    
     const track = musicTracks[currentMusicIndex];
     youtubePlayer = new (window as any).YT.Player('youtube-player', {
       height: '0',
       width: '0',
       videoId: track.id,
       playerVars: {
-        autoplay: 1,
+        autoplay: shouldAutoplay ? 1 : 0,
         controls: 0,
         loop: 1,
         playlist: track.id // Required for looping
@@ -547,13 +554,19 @@
       events: {
         onReady: (event: any) => {
           event.target.setVolume(musicVolume);
-          event.target.playVideo();
-          isMusicPlaying = true;
-          console.log('[Music] YouTube player ready and playing:', track.name);
+          if (shouldAutoplay) {
+            event.target.playVideo();
+            isMusicPlaying = true;
+            localStorage.setItem('isMusicPlaying', '1');
+            console.log('[Music] YouTube player ready and auto-playing:', track.name);
+          } else {
+            console.log('[Music] YouTube player ready (paused):', track.name);
+          }
         },
         onStateChange: (event: any) => {
           // YT.PlayerState.PLAYING = 1, PAUSED = 2
           isMusicPlaying = event.data === 1;
+          localStorage.setItem('isMusicPlaying', isMusicPlaying ? '1' : '0');
         }
       }
     });
@@ -759,6 +772,12 @@
           console.log('[Music] Loaded track index from storage:', currentMusicIndex);
         }
       }
+      // Load music playing state
+      const musicPlayingSaved = localStorage.getItem('isMusicPlaying');
+      if (musicPlayingSaved === '1') {
+        // Will be started automatically by createYouTubePlayer when API is ready
+        console.log('[Music] Will resume playback (was playing before refresh)');
+      }
       storageLoaded = true;
       
       // Auto-start YouTube API
@@ -919,8 +938,10 @@
         evilHits: item.evilHits || 0,
         colorIndex: item.colorIndex,
         country: item.country,
-        lastUpdated: item.lastUpdated?.seconds ? item.lastUpdated.seconds * 1000 : Date.now()
+        lastUpdated: item.lastUpdated?.seconds ? item.lastUpdated.seconds * 1000 : Date.now(),
+        placements: item.placements || {} // Include placement data (first, second, third)
       }));
+      console.log('[Highscores] Loaded from Firestore with placements:', highscores.filter(h => h.placements?.first || h.placements?.second || h.placements?.third).length);
       hsLastLoaded = Date.now();
 
       // Update cache
@@ -4267,10 +4288,15 @@
                   <svelte:component this={FlagComp} width="20" style="flex-shrink:0;" />
                 {/if}
                 <div style="flex:1; min-width:0;">
-                  {prettyName(h.userId || h.id)}
+                  <div>{prettyName(h.userId || h.id)}</div>
+                  <div style="font-size:11px; opacity:.8; margin-top:2px;">Catches: {h.totalCatches || 0} · Evil: {h.evilHits || 0}</div>
+                  {#if h.placements && (h.placements.first || h.placements.second || h.placements.third)}
+                    <div style="font-size:11px; opacity:.7; margin-top:2px;">
+                      {#if h.placements.third}{h.placements.third}×🥉{/if}{#if h.placements.third && (h.placements.second || h.placements.first)} | {/if}{#if h.placements.second}{h.placements.second}×🥈{/if}{#if h.placements.second && h.placements.first} | {/if}{#if h.placements.first}{h.placements.first}×🥇{/if}
+                    </div>
+                  {/if}
                 </div>
-                <div style="font-weight:bold; color:#4f4;">{h.score}</div>
-                <div style="font-size:12px; opacity:.8;">Catches: {h.totalCatches || 0} · Evil hits: {h.evilHits || 0}</div>
+                <div style="font-weight:bold; color:#4f4; font-size:18px;">{h.score}</div>
               </div>
             {/each}
           </div>
@@ -4327,7 +4353,7 @@
               </div>
               {#if h.placements && (h.placements.first || h.placements.second || h.placements.third)}
                 <div style="font-size:11px; opacity:.7; margin-top:2px;">
-                  {#if h.placements.first}🥇×{h.placements.first} {/if}{#if h.placements.second}🥈×{h.placements.second} {/if}{#if h.placements.third}🥉×{h.placements.third}{/if}
+                  {#if h.placements.third}{h.placements.third}×🥉{/if}{#if h.placements.third && (h.placements.second || h.placements.first)} | {/if}{#if h.placements.second}{h.placements.second}×🥈{/if}{#if h.placements.second && h.placements.first} | {/if}{#if h.placements.first}{h.placements.first}×🥇{/if}
                 </div>
               {/if}
             </div>
