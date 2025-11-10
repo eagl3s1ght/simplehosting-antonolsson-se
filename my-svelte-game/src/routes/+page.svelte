@@ -1,9 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, recordCatch, recordEvilHit, pruneOldFlows, fetchHighscores, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, cleanBotHighscores, cleanupStaleBots, auth, db, ROOM } from '$lib/firebase.js';
+  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, pruneOldFlows, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, cleanupStaleBots, auth, db, ROOM, getHighScoresFirestore } from '$lib/firebase.js';
   import { ref, set, goOffline } from 'firebase/database';
   import { browser, dev } from '$app/environment';
-  import MigrationButton from '$lib/MigrationButton.svelte';
 
   // Debug-only imports (conditional, tree-shaken in production)
   let removeAllFlows: any, removeLayer5Flows: any, analyzeDbSize: any;
@@ -719,9 +718,48 @@
 
   async function loadHighscoresOnce() {
     try {
-      const list = await fetchHighscores(100);
-      highscores = list;
+      // Load from cache first for instant display
+      if (browser) {
+        const cached = localStorage.getItem('highscores_cache');
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            if (parsed.data && Array.isArray(parsed.data)) {
+              highscores = parsed.data;
+              console.log('[Highscores] Loaded from cache');
+            }
+          } catch (e) {
+            console.warn('[Highscores] Failed to parse cache', e);
+          }
+        }
+      }
+
+      // Fetch fresh data from Firestore
+      const list = await getHighScoresFirestore(100);
+      // Convert Firestore format to match old RTDB format for compatibility
+      // Use Firestore document ID (item.id) as the key to ensure uniqueness
+      highscores = list.map(item => ({
+        id: item.id, // Firestore document ID (unique)
+        userId: item.userId, // Actual user ID for reference
+        totalCatches: item.score,
+        evilHits: item.evilHits || 0,
+        colorIndex: item.colorIndex,
+        country: item.country,
+        lastUpdated: item.lastUpdated?.seconds ? item.lastUpdated.seconds * 1000 : Date.now()
+      }));
       hsLastLoaded = Date.now();
+
+      // Update cache
+      if (browser && highscores.length > 0) {
+        try {
+          localStorage.setItem('highscores_cache', JSON.stringify({
+            data: highscores,
+            timestamp: Date.now()
+          }));
+        } catch (e) {
+          console.warn('[Highscores] Failed to save cache', e);
+        }
+      }
     } catch (e) {
       console.warn('Failed to load highscores', e);
     }
@@ -891,12 +929,12 @@
             
             if (flow.isEvil) {
               decrementScore(owner.id);
-              recordEvilHit(owner.id); // Lifetime stats
+              // recordEvilHit(owner.id); // REMOVED: Now using Firestore high scores
               incrementSessionEvilHits(owner.id); // Session stats
               console.debug('Nest caught evil flow!', { colorIndex: idx, playerId: owner.id });
             } else {
               incrementScore(owner.id);
-              recordCatch(owner.id, idx);
+              // recordCatch(owner.id, idx); // REMOVED: Now using Firestore high scores
               console.debug('Nest caught flow!', { colorIndex: idx, playerId: owner.id });
             }
           });
@@ -933,7 +971,7 @@
         if (flow.isEvil) {
           // Evil flow reduces score and triggers hurt animation
           decrementScore(myPlayer.playerId);
-          recordEvilHit(myPlayer.playerId); // Lifetime stats
+          // recordEvilHit(myPlayer.playerId); // REMOVED: Now using Firestore high scores
           incrementSessionEvilHits(myPlayer.playerId); // Session stats
           hurtUntil = now + 400; // Blink for 400ms (2 blinks at ~200ms each)
           console.debug('HIT BY EVIL FLOW! Score reduced', {
@@ -960,12 +998,8 @@
             });
           }
           
-          // Update lifetime highscore (catches)
-          recordCatch(
-            myPlayer.playerId,
-            myColorIndex ?? undefined,
-            getCountryFromMeta((myPlayer.playerData as any)?.meta) ?? undefined
-          );
+          // REMOVED: RTDB high score tracking, now using Firestore
+          // recordCatch(myPlayer.playerId, myColorIndex ?? undefined, ...);
           console.debug('COLLISION! Flow caught at angle', {
             flowId,
             flowAngle: flow.angle,
@@ -998,7 +1032,7 @@
         
         if (flow.isEvil) {
           decrementScore(player2Player.playerId);
-          recordEvilHit(player2Player.playerId);
+          // recordEvilHit(player2Player.playerId); // REMOVED: Now using Firestore
           incrementSessionEvilHits(player2Player.playerId);
           console.debug('[P2] HIT BY EVIL FLOW!', {
             flowId,
@@ -1009,11 +1043,7 @@
         } else {
           incrementScore(player2Player.playerId);
           player2SpeedBoost++;
-          recordCatch(
-            player2Player.playerId,
-            player2ColorIndex ?? undefined,
-            undefined
-          );
+          // recordCatch(player2Player.playerId, ...); // REMOVED: Now using Firestore
           console.debug('[P2] COLLISION! Flow caught', {
             flowId,
             flowAngle: flow.angle,
@@ -1114,12 +1144,12 @@
             
             if (flow.isEvil) {
               decrementScore(botPlayer.playerId);
-              recordEvilHit(botPlayer.playerId); // Lifetime stats
+              // recordEvilHit(botPlayer.playerId); // REMOVED: Now using Firestore
               incrementSessionEvilHits(botPlayer.playerId); // Session stats
             } else {
               incrementScore(botPlayer.playerId);
               botPlayer.speedBoost++;
-              recordCatch(botPlayer.playerId, botPlayer.colorIndex ?? undefined);
+              // recordCatch(botPlayer.playerId, ...); // REMOVED: Now using Firestore
             }
           }
         }
@@ -2586,8 +2616,7 @@
   <title>Flow ~together~ made with 🩸, 💦 & ❤️ by a gothenburgian</title>
 </svelte:head>
 
-<!-- Firestore Migration Button (dev only) -->
-<MigrationButton />
+<!-- REMOVED: MigrationButton - migration complete, now using Firestore -->
 
 {#if dev}
 <div style="position: absolute; top: 10px; right: 10px; z-index: 10;">
@@ -2793,14 +2822,7 @@
   }}>
     Cleanup Inactive Players (5min)
   </button>
-  <button style="margin-top: 8px; width: 100%; padding: 8px; background: #993333; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;" on:click={async () => {
-    console.log('🤖 Cleaning bot highscores...');
-    const removed = await cleanBotHighscores();
-    console.log(`Removed ${removed} bot highscores from database`);
-    alert(`Removed ${removed} bot highscores`);
-  }}>
-    Clean Bot Highscores
-  </button>
+  <!-- REMOVED: cleanBotHighscores button - no longer needed with Firestore -->
   <button style="margin-top: 8px; width: 100%; padding: 8px; background: #336633; color: #fff; border: none; border-radius: 4px; cursor: pointer;" on:click={async () => {
     console.log('📊 Analyzing database size...');
     const analysis = await analyzeDbSize();
@@ -3416,7 +3438,7 @@
             {#each highscores as h, i (h.id)}
               {@const FlagComp = getFlagComponent(h.country)}
               <div style="display:flex; align-items:center; gap:8px; padding:8px; border-bottom:1px solid #333; background:{i<3?'#252':'transparent'};"
-                   style:opacity={players.some(pl => pl.id === h.id) ? 1 : 0.55}
+                   style:opacity={players.some(pl => pl.id === h.userId) ? 1 : 0.55}
                    title={`Last updated: ${h.lastUpdated?new Date(h.lastUpdated).toLocaleString():''}${h.country?`\nCountry: ${h.country}`:''}`}>
                 <div style="min-width:24px; font-weight:bold; color:{i===0?'#ffd700':i===1?'#c0c0c0':i===2?'#cd7f32':'#666'};">
                   {i+1}.
@@ -3425,7 +3447,7 @@
                   <svelte:component this={FlagComp} width="20" style="flex-shrink:0;" />
                 {/if}
                 <div style="flex:1; min-width:0;">
-                  {prettyName(h.id)}
+                  {prettyName(h.userId || h.id)}
                 </div>
                 <div style="font-weight:bold; color:#4f4;">{h.score}</div>
                 <div style="font-size:12px; opacity:.8;">Catches: {h.totalCatches || 0} · Evil hits: {h.evilHits || 0}</div>
@@ -3468,7 +3490,7 @@
         {#each highscores as h, i (h.id)}
           {@const FlagComp = getFlagComponent(h.country)}
           <div style="display:flex; align-items:center; gap:10px; padding:6px 0; border-top: 1px solid #2a2a2a;"
-               style:opacity={players.some(pl => pl.id === h.id) ? 1 : 0.55}
+               style:opacity={players.some(pl => pl.id === h.userId) ? 1 : 0.55}
                title={`Last updated: ${h.lastUpdated?new Date(h.lastUpdated).toLocaleString():''}${h.country?`\nCountry: ${h.country}`:''}`}>
             <div style="width: 24px; text-align:right; opacity:.8;">{i+1}.</div>
             <div style="flex:1;">
@@ -3477,7 +3499,7 @@
                   <svelte:component this={FlagComp} style="width:16px;height:12px;border-radius:2px; overflow:hidden;" />
                 {/if}
                 <span>
-                  {prettyName(h.id)}
+                  {prettyName(h.userId || h.id)}
                 </span>
               </div>
               <div style="font-size:12px; opacity:.8;">Catches: {h.totalCatches || 0} · Evil hits: {h.evilHits || 0}</div>

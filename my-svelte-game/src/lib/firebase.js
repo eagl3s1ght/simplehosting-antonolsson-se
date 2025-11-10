@@ -337,62 +337,6 @@ export async function removeLayer5Flows(batchLimit = 1000) {
 
 /** Increment lifetime catch stats for a player.
  * @param {string} playerId
- * @param {string} [name]
- * @param {number} [colorIndex]
- */
-/** Increment lifetime catch stats for a player.
- * @param {string} playerId
- * @param {number} [colorIndex]
- */
-/** @param {string} playerId 
-  * @param {number} [colorIndex]
-  * @param {string} [countryCode] two-letter ISO code
-  */
-export async function recordCatch(playerId, colorIndex, countryCode) {
-  // Don't record highscores for bots or local co-op players
-  const playerRef = ref(db, `${ROOM}/players/${playerId}`);
-  const playerSnap = await get(playerRef);
-  const playerData = playerSnap.val();
-  
-  if (playerData?.isBot || playerData?.isLocalCoop) {
-    return; // Skip recording for bots and local co-op players
-  }
-  
-  const hsRef = ref(db, `${ROOM}/highscores/${playerId}`);
-  const now = Date.now();
-  runTransaction(hsRef, (hs) => {
-    hs = hs || { totalCatches: 0, evilHits: 0 };
-    hs.totalCatches = (hs.totalCatches || 0) + 1;
-    hs.lastUpdated = now;
-    if (typeof colorIndex === 'number') hs.colorIndex = colorIndex;
-    if (typeof countryCode === 'string' && countryCode.length === 2) hs.country = countryCode.toUpperCase();
-    return hs;
-  });
-}
-
-/** Increment lifetime evil-hit stats for a player.
- * @param {string} playerId
- */
-export async function recordEvilHit(playerId) {
-  // Don't record highscores for bots or local co-op players
-  const playerRef = ref(db, `${ROOM}/players/${playerId}`);
-  const playerSnap = await get(playerRef);
-  const playerData = playerSnap.val();
-  
-  if (playerData?.isBot || playerData?.isLocalCoop) {
-    return; // Skip recording for bots and local co-op players
-  }
-  
-  const hsRef = ref(db, `${ROOM}/highscores/${playerId}`);
-  const now = Date.now();
-  runTransaction(hsRef, (hs) => {
-    hs = hs || { totalCatches: 0, evilHits: 0 };
-    hs.evilHits = (hs.evilHits || 0) + 1;
-    hs.lastUpdated = now;
-    return hs;
-  });
-}
-
 /** Remove old flows by spawnTime cutoff (in ms ago). Safe to call ad-hoc.
  * @param {number} maxAgeMs
  * @param {number} [batchLimit=500]
@@ -435,51 +379,8 @@ export async function pruneOldFlows(maxAgeMs = 60000, batchLimit = 500) {
   }
 }
 
-/** Clean bot highscores from the database
- * @returns {Promise<number>} Number of bot highscores removed
- */
-export async function cleanBotHighscores() {
-  try {
-    const playersSnap = await get(ref(db, `${ROOM}/players`));
-    const highscoresSnap = await get(ref(db, `${ROOM}/highscores`));
-    
-    if (!playersSnap.exists() || !highscoresSnap.exists()) return 0;
-    
-    const players = playersSnap.val();
-    const botPlayerIds = new Set();
-    
-    // Find all bot and local co-op player IDs
-    Object.entries(players).forEach(([playerId, playerData]) => {
-      if (playerData?.isBot || playerData?.isLocalCoop) {
-        botPlayerIds.add(playerId);
-      }
-    });
-    
-    // Also check for player IDs that start with 'bot-' or 'local-p2-'
-    Object.keys(highscoresSnap.val()).forEach((playerId) => {
-      if (playerId.startsWith('bot-') || playerId.startsWith('local-p2-')) {
-        botPlayerIds.add(playerId);
-      }
-    });
-    
-    // Remove bot highscores
-    const removals = [];
-    botPlayerIds.forEach((playerId) => {
-      removals.push(
-        remove(ref(db, `${ROOM}/highscores/${playerId}`))
-          .then(() => console.log(`[cleanBotHighscores] Removed bot highscore: ${playerId}`))
-          .catch(err => console.warn(`[cleanBotHighscores] Failed to remove ${playerId}:`, err))
-      );
-    });
-    
-    await Promise.all(removals);
-    console.log(`[cleanBotHighscores] Removed ${removals.length} bot highscores`);
-    return removals.length;
-  } catch (e) {
-    console.warn('[cleanBotHighscores] Error:', e);
-    return 0;
-  }
-}
+// REMOVED: cleanBotHighscores - no longer needed with Firestore
+// Bot highscores are prevented at the source in saveHighScoreFirestore
 
 /** Analyze database size and return a tree structure with byte counts.
  * @returns {Promise<any>}
@@ -512,25 +413,11 @@ export async function analyzeDbSize() {
   }
 }
 
-/** Fetch top highscores by totalCatches (client reverses ascending order).
- * @param {number} [limit=20]
- * @returns {Promise<any[]>}
- */
-/** @param {number} [limit=20] */
-export async function fetchHighscores(limit = 20) {
-  const q = query(ref(db, `${ROOM}/highscores`), orderByChild('totalCatches'), limitToLast(limit));
-  const snap = await get(q);
-  /** @type {{id:string,totalCatches?:number,evilHits?:number,name?:string,colorIndex?:number,country?:string,lastUpdated?:number}[]} */
-  const list = [];
-  if (snap.exists()) {
-    snap.forEach((child) => {
-      list.push({ id: child.key, ...(child.val() || {}) });
-    });
-  }
-  // Reverse to descending by totalCatches
-  list.sort((a, b) => (b.totalCatches || 0) - (a.totalCatches || 0));
-  return list;
-}
+// REMOVED: fetchHighscores - now using getHighScoresFirestore instead
+// See getHighScoresFirestore in this file for Firestore-based highscore fetching
+
+/**
+ * Clean up inactive players from the database (not seen in 5+ minutes).
 
 /**
  * Clean up inactive players from the database (not seen in 5+ minutes).
