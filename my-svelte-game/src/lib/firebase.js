@@ -543,6 +543,69 @@ export async function cleanupStaleBots() {
 // New Firestore-based high score functions for better performance and scalability
 
 /**
+ * Save placement (1st, 2nd, 3rd) to Firestore when game ends
+ * @param {string} userId - User ID
+ * @param {number} placement - 1, 2, or 3
+ * @returns {Promise<void>}
+ */
+export async function savePlacementFirestore(userId, placement) {
+  if (!userId || placement < 1 || placement > 3) {
+    console.warn('[Firestore] Invalid placement data:', { userId, placement });
+    return;
+  }
+  
+  // Don't save for bots or local co-op players
+  if (userId.startsWith('bot-') || userId.startsWith('local-p2-')) {
+    return;
+  }
+  
+  try {
+    // Check if user already has a high score document
+    const q = fsQuery(collection(fsDb, 'highScores'), where('userId', '==', userId));
+    const snap = await getDocs(q);
+    
+    if (snap.empty) {
+      // Create new document with placement
+      const placementData = { first: 0, second: 0, third: 0 };
+      if (placement === 1) placementData.first = 1;
+      else if (placement === 2) placementData.second = 1;
+      else if (placement === 3) placementData.third = 1;
+      
+      await addDoc(collection(fsDb, 'highScores'), {
+        userId: userId,
+        name: 'Anonymous',
+        score: 0,
+        totalCatches: 0,
+        evilHits: 0,
+        colorIndex: 0,
+        country: null,
+        placements: placementData,
+        date: new Date(),
+        lastUpdated: new Date()
+      });
+      console.log(`[Firestore] Created new document with ${placement} placement for ${userId}`);
+    } else {
+      // Update existing document
+      const docRef = doc(fsDb, 'highScores', snap.docs[0].id);
+      const existingData = snap.docs[0].data();
+      const placements = existingData.placements || { first: 0, second: 0, third: 0 };
+      
+      if (placement === 1) placements.first = (placements.first || 0) + 1;
+      else if (placement === 2) placements.second = (placements.second || 0) + 1;
+      else if (placement === 3) placements.third = (placements.third || 0) + 1;
+      
+      await updateDoc(docRef, {
+        placements: placements,
+        lastUpdated: new Date()
+      });
+      console.log(`[Firestore] Updated ${placement} placement for ${userId}:`, placements);
+    }
+  } catch (error) {
+    console.error('[Firestore] Error saving placement:', error);
+  }
+}
+
+/**
  * Save or update a high score in Firestore
  * @param {string} name - Player display name
  * @param {number} score - Total catches score

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, pruneOldFlows, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, cleanupStaleBots, auth, db, ROOM, getHighScoresFirestore } from '$lib/firebase.js';
+  import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, pruneOldFlows, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, cleanupStaleBots, auth, db, ROOM, getHighScoresFirestore, savePlacementFirestore } from '$lib/firebase.js';
   import { ref, set, goOffline } from 'firebase/database';
   import { browser, dev } from '$app/environment';
 
@@ -1416,6 +1416,17 @@
       country: p.meta?.country || null,
       colorIndex: p.colorIndex ?? null
     }));
+    
+    // Save placements to Firestore
+    if (podium.length > 0) {
+      podium.forEach((player, index) => {
+        const placement = index + 1; // 1st, 2nd, 3rd
+        savePlacementFirestore(player.id, placement).catch(err => {
+          console.error('[Victory] Failed to save placement:', err);
+        });
+      });
+      console.log('[Victory] Saved placements for top 3 players');
+    }
     
     // Most bad hits (evil flows hit)
     const sortedByBadHits = [...players]
@@ -3814,7 +3825,14 @@
                   {prettyName(h.userId || h.id)}
                 </span>
               </div>
-              <div style="font-size:12px; opacity:.8;">Catches: {h.totalCatches || 0} · Evil hits: {h.evilHits || 0}</div>
+              <div style="font-size:12px; opacity:.8;">
+                Catches: {h.totalCatches || 0} · Evil hits: {h.evilHits || 0}
+              </div>
+              {#if h.placements && (h.placements.first || h.placements.second || h.placements.third)}
+                <div style="font-size:11px; opacity:.7; margin-top:2px;">
+                  {#if h.placements.first}🥇×{h.placements.first} {/if}{#if h.placements.second}🥈×{h.placements.second} {/if}{#if h.placements.third}🥉×{h.placements.third}{/if}
+                </div>
+              {/if}
             </div>
           </div>
         {/each}
