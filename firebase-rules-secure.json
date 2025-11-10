@@ -1,18 +1,26 @@
 {
   "rules": {
     "publicGame": {
-        "flows": {
-          ".read": true,
-          ".write": "auth != null",
-          ".indexOn": ["spawnTime","layer"],
-        },
-        "highscores": {
-          ".read": "now < 1765062000000",  // 2025-12-7
-    			".write": "now < 1765062000000",  // 2025-12-7
-          ".indexOn": "totalCatches"
+      "flows": {
+        ".read": true,
+        ".write": "auth != null",
+        ".indexOn": ["spawnTime", "layer"]
+      },
+      "players": {
+        ".read": true,
+        "$playerId": {
+          ".write": "auth != null && (auth.uid == $playerId || !data.exists() || auth.uid == data.child('id').val())"
         }
+      },
+      "highscores": {
+        ".read": "now < 1765062000000",
+        "$scoreId": {
+          ".write": "auth != null && now < 1765062000000 && (auth.uid == $scoreId || !data.exists())"
+        },
+        ".indexOn": "totalCatches"
+      }
     },
-    ".read": "now < 1765062000000",  // 2025-12-7
-    ".write": "auth != null",
+    ".read": "now < 1765062000000",
+    ".write": false
   }
 }
