@@ -160,7 +160,7 @@
   // Arc ability cooldown (5 seconds)
   let arcCooldownP1 = 0;
   let arcCooldownP2 = 0;
-  const ARC_COOLDOWN_MS = 5000;
+  // Arc cooldown is now difficulty-dependent via getArcCooldown()
   const ARC_ANGLE_RANGE = Math.PI / 3; // 60 degrees arc in front of player
   
   // Reactive timestamp for cooldown display (updated in render loop)
@@ -258,6 +258,33 @@
     mostLayerMoves: {id: string; name: string; moves: number; country: string | null} | null;
     nearestToSun: {id: string; name: string; layer: number; country: string | null} | null;
   } = { podium: [], mostBadHits: null, mostLayerMoves: null, nearestToSun: null };
+
+  // Difficulty notification state
+  let difficultyNotification = '';
+  let showDifficultyNotification = false;
+  
+  function showDifficultyChange(level: number) {
+    const messages: Record<number, string> = {
+      1: '🌟 Welcome to Flow! Catch the yellow flows!',
+      2: '⚠️ Evil flows incoming! +10% speed',
+      3: '💀 Evil flows darker & deadlier (-2 points)',
+      4: '📈 +25% more flows spawning',
+      5: '🌊 Flow surge! Double spawn rate',
+      6: '🐌 Flows slowed down 15% (breathing room!)',
+      7: '☠️ Evil flows turn black with red glow (-3 points)',
+      8: '⭐ Bigger flows worth 2 points each!',
+      9: '👹 +30% more evil flows, bigger size',
+      10: '🔥 ENDGAME! Red sun, glowing flows (3pts), green evils (-5pts), 3s arc cooldown!'
+    };
+    
+    difficultyNotification = messages[level] || `Difficulty ${level}`;
+    showDifficultyNotification = true;
+    
+    // Hide after 4 seconds
+    setTimeout(() => {
+      showDifficultyNotification = false;
+    }, 4000);
+  }
 
   // FPS tracking
   let lastFrameTime = Date.now();
@@ -636,6 +663,7 @@
   function useArcAbility(playerAngle: number, playerLayer: number, isPlayer2: boolean = false) {
     const now = Date.now();
     const cooldownRef = isPlayer2 ? arcCooldownP2 : arcCooldownP1;
+    const ARC_COOLDOWN_MS = getArcCooldown();
     
     // Check cooldown
     if (now - cooldownRef < ARC_COOLDOWN_MS) {
@@ -924,8 +952,117 @@
   let pauseAccumulatedMs = 0;           // total paused time since page load
   let pauseStartedAt: number | null = null; // when current pause started
   let pauseAccumAtDiffStart = 0;        // pause total at last difficulty change
+  
+  // Difficulty-based modifiers
+  function getDifficultySpeedMultiplier() {
+    if (difficulty === 1) return 1.0;
+    if (difficulty === 2) return 1.1;  // +10% speed
+    if (difficulty === 3) return 1.1;
+    if (difficulty === 4) return 1.1;
+    if (difficulty === 5) return 1.1;
+    if (difficulty === 6) return 0.85; // -15% speed (slower)
+    if (difficulty === 7) return 0.85;
+    if (difficulty === 8) return 0.85;
+    if (difficulty === 9) return 0.85;
+    if (difficulty === 10) return 1.4; // +40% speed
+    return 1.0;
+  }
+  
+  function getFlowSpawnMultiplier() {
+    if (difficulty === 1) return 1.0;
+    if (difficulty === 2) return 1.0;
+    if (difficulty === 3) return 1.0;
+    if (difficulty === 4) return 1.25; // +25% more flows
+    if (difficulty === 5) return 1.5;  // +50% more flows (double base rate)
+    if (difficulty >= 6) return 1.5;
+    return 1.0;
+  }
+  
+  function getFlowSizeModifier() {
+    if (difficulty === 1) return 1.0;
+    if (difficulty === 2) return 1.0;
+    if (difficulty === 3) return 1.0;
+    if (difficulty === 4) return 1.0;
+    if (difficulty === 5) return 1.0;
+    if (difficulty === 6) return 1.0;
+    if (difficulty === 7) return 1.0;
+    if (difficulty === 8) return 1.2; // +20% size
+    if (difficulty === 9) return 1.2;
+    if (difficulty === 10) return 1.2;
+    return 1.0;
+  }
+  
+  function getFlowPointValue() {
+    if (difficulty === 1) return 1;
+    if (difficulty === 2) return 1;
+    if (difficulty === 3) return 1;
+    if (difficulty === 4) return 1;
+    if (difficulty === 5) return 1;
+    if (difficulty === 6) return 1;
+    if (difficulty === 7) return 1;
+    if (difficulty === 8) return 2; // 2 points per catch
+    if (difficulty === 9) return 2;
+    if (difficulty === 10) return 3; // 3 points per catch
+    return 1;
+  }
+  
+  function getEvilFlowPenalty() {
+    if (difficulty === 1) return 1;
+    if (difficulty === 2) return 1;
+    if (difficulty === 3) return 2; // -2 points
+    if (difficulty === 4) return 2;
+    if (difficulty === 5) return 2;
+    if (difficulty === 6) return 2;
+    if (difficulty === 7) return 3; // -3 points
+    if (difficulty === 8) return 3;
+    if (difficulty === 9) return 3;
+    if (difficulty === 10) return 5; // -5 points
+    return 1;
+  }
+  
+  function getEvilFlowSizeModifier() {
+    if (difficulty === 1) return 1.0;
+    if (difficulty === 2) return 1.0;
+    if (difficulty === 3) return 1.0;
+    if (difficulty === 4) return 1.0;
+    if (difficulty === 5) return 1.0;
+    if (difficulty === 6) return 1.0;
+    if (difficulty === 7) return 1.0;
+    if (difficulty === 8) return 1.0;
+    if (difficulty === 9) return 1.1; // +10% size
+    if (difficulty === 10) return 1.2; // +20% size (cumulative with diff 9)
+    return 1.0;
+  }
+  
+  function getEvilFlowSpawnMultiplier() {
+    if (difficulty === 1) return 0;
+    if (difficulty === 2) return 1.0;
+    if (difficulty === 3) return 1.0;
+    if (difficulty === 4) return 1.0;
+    if (difficulty === 5) return 1.0;
+    if (difficulty === 6) return 1.0;
+    if (difficulty === 7) return 1.0;
+    if (difficulty === 8) return 1.0;
+    if (difficulty === 9) return 1.3; // +30% more evil flows
+    if (difficulty === 10) return 1.3;
+    return 1.0;
+  }
+  
+  function getArcCooldown() {
+    if (difficulty === 10) return 3000; // 3 seconds at difficulty 10
+    return 5000; // 5 seconds otherwise
+  }
+  
   // Reactive: difficulty multiplier recalculated from difficulty level
-  $: difficultySpeedMultiplier = Math.pow(1.05, Math.max(0, difficulty - 1));
+  $: difficultySpeedMultiplier = getDifficultySpeedMultiplier();
+  
+  // Show notification when difficulty changes manually (e.g., debug slider)
+  let previousDifficulty = 1;
+  $: if (difficulty !== previousDifficulty && previousDifficulty > 0) {
+    showDifficultyChange(difficulty);
+    previousDifficulty = difficulty;
+  }
+  
   let gameStartTime = 0;
   let gameSessionStartTime = 0;         // sessions gate scoreboard membership
   let pauseForNoPlayers = false;        // true when no active players
@@ -1074,14 +1211,20 @@
             flowsToRemove.add(flowId);
             
             if (flow.isEvil) {
-              decrementScore(owner.id);
+              const penalty = getEvilFlowPenalty();
+              for (let i = 0; i < penalty; i++) {
+                decrementScore(owner.id);
+              }
               // recordEvilHit(owner.id); // REMOVED: Now using Firestore high scores
               incrementSessionEvilHits(owner.id); // Session stats
-              console.debug('Nest caught evil flow!', { colorIndex: idx, playerId: owner.id });
+              console.debug('Nest caught evil flow!', { colorIndex: idx, playerId: owner.id, penalty });
             } else {
-              incrementScore(owner.id);
+              const pointValue = getFlowPointValue();
+              for (let i = 0; i < pointValue; i++) {
+                incrementScore(owner.id);
+              }
               // recordCatch(owner.id, idx); // REMOVED: Now using Firestore high scores
-              console.debug('Nest caught flow!', { colorIndex: idx, playerId: owner.id });
+              console.debug('Nest caught flow!', { colorIndex: idx, playerId: owner.id, points: pointValue });
             }
           });
         }
@@ -1116,7 +1259,10 @@
         
         if (flow.isEvil) {
           // Evil flow reduces score and triggers hurt animation
-          decrementScore(myPlayer.playerId);
+          const penalty = getEvilFlowPenalty();
+          for (let i = 0; i < penalty; i++) {
+            decrementScore(myPlayer.playerId);
+          }
           // recordEvilHit(myPlayer.playerId); // REMOVED: Now using Firestore high scores
           incrementSessionEvilHits(myPlayer.playerId); // Session stats
           hurtUntil = now + 400; // Blink for 400ms (2 blinks at ~200ms each)
@@ -1124,23 +1270,28 @@
             flowId,
             flowAngle: flow.angle,
             playerAngle: myAngle,
-            layer: myLayer
+            layer: myLayer,
+            penalty
           });
         } else {
           // Normal flow increases score AND speed boost
-          incrementScore(myPlayer.playerId);
+          const pointValue = getFlowPointValue();
+          for (let i = 0; i < pointValue; i++) {
+            incrementScore(myPlayer.playerId);
+          }
           mySpeedBoost++; // +1% additive per catch
           
           // Track score increase in PostHog
           if (typeof window !== 'undefined' && window.posthog) {
             const currentPlayer = players.find(p => p.id === myPlayer.playerId);
-            const newScore = (currentPlayer?.score || 0) + 1; // Score will be incremented
+            const newScore = (currentPlayer?.score || 0) + pointValue; // Score will be incremented
             window.posthog.capture('score_increased', {
               player_id: myPlayer.playerId,
               new_score: newScore,
               speed_boost: mySpeedBoost,
               layer: myLayer,
-              color_index: myColorIndex
+              color_index: myColorIndex,
+              points: pointValue
             });
           }
           
@@ -1150,6 +1301,7 @@
             flowId,
             flowAngle: flow.angle,
             playerAngle: myAngle,
+            points: pointValue,
             progress: progress.toFixed(3),
             layer: myLayer,
             speedBoost: mySpeedBoost
@@ -1177,17 +1329,24 @@
         flowsToRemove.add(flowId);
         
         if (flow.isEvil) {
-          decrementScore(player2Player.playerId);
+          const penalty = getEvilFlowPenalty();
+          for (let i = 0; i < penalty; i++) {
+            decrementScore(player2Player.playerId);
+          }
           // recordEvilHit(player2Player.playerId); // REMOVED: Now using Firestore
           incrementSessionEvilHits(player2Player.playerId);
           console.debug('[P2] HIT BY EVIL FLOW!', {
             flowId,
             flowAngle: flow.angle,
             playerAngle: player2Angle,
-            layer: player2Layer
+            layer: player2Layer,
+            penalty
           });
         } else {
-          incrementScore(player2Player.playerId);
+          const pointValue = getFlowPointValue();
+          for (let i = 0; i < pointValue; i++) {
+            incrementScore(player2Player.playerId);
+          }
           player2SpeedBoost++;
           // recordCatch(player2Player.playerId, ...); // REMOVED: Now using Firestore
           console.debug('[P2] COLLISION! Flow caught', {
@@ -1289,11 +1448,17 @@
             flowsToRemove.add(flowId);
             
             if (flow.isEvil) {
-              decrementScore(botPlayer.playerId);
+              const penalty = getEvilFlowPenalty();
+              for (let i = 0; i < penalty; i++) {
+                decrementScore(botPlayer.playerId);
+              }
               // recordEvilHit(botPlayer.playerId); // REMOVED: Now using Firestore
               incrementSessionEvilHits(botPlayer.playerId); // Session stats
             } else {
-              incrementScore(botPlayer.playerId);
+              const pointValue = getFlowPointValue();
+              for (let i = 0; i < pointValue; i++) {
+                incrementScore(botPlayer.playerId);
+              }
               botPlayer.speedBoost++;
               // recordCatch(botPlayer.playerId, ...); // REMOVED: Now using Firestore
             }
@@ -1515,6 +1680,9 @@
     setTimeout(() => {
       showSplash = false;
     }, 3000);
+    
+    // Initialize previousDifficulty to avoid showing notification on mount
+    previousDifficulty = difficulty;
 
   let unsubPlayers: () => void = () => {};
   let unsubFlows: () => void = () => {};
@@ -1670,6 +1838,7 @@
           if (pl && pl.id) lastKnownAngles.set(pl.id, pl.angle);
         });
         console.log('Difficulty increased to:', difficulty);
+        showDifficultyChange(difficulty);
         // difficultySpeedMultiplier updates reactively from difficulty
       }
     }, DIFFICULTY_INTERVAL_MS); // Every minute
@@ -1689,9 +1858,10 @@
       if (pauseForNoPlayers) return; // don't spawn while paused
       const numPlayers = countOnlinePlayers();
       if (numPlayers === 0) return; // safety
-      const burstSize = Math.min(12, Math.max(3, numPlayers * 2));
+      const baseSize = Math.min(12, Math.max(3, numPlayers * 2));
+      const burstSize = Math.ceil(baseSize * getFlowSpawnMultiplier());
       spawnBurst(burstSize, 0); // normal flows only
-      console.debug(`Burst spawned ${burstSize} normal flows for ${numPlayers} players`);
+      console.debug(`Burst spawned ${burstSize} normal flows for ${numPlayers} players (multiplier: ${getFlowSpawnMultiplier()})`);
     }, 10000);
 
     // Evil burst every minute if difficulty >=2
@@ -1700,10 +1870,11 @@
       if (difficulty >= 2) {
         const numPlayers = countOnlinePlayers();
         if (numPlayers === 0) return;
-        const burstSize = Math.min(16, Math.max(4, numPlayers * 2));
+        const baseSize = Math.min(16, Math.max(4, numPlayers * 2));
+        const burstSize = Math.ceil(baseSize * getEvilFlowSpawnMultiplier());
         const evilFraction = 0.4; // 40% evil inside this burst
         spawnBurst(burstSize, evilFraction);
-        console.debug(`Evil burst spawned ${burstSize} flows (${Math.round(burstSize*evilFraction)} evil) difficulty=${difficulty}`);
+        console.debug(`Evil burst spawned ${burstSize} flows (${Math.round(burstSize*evilFraction)} evil) difficulty=${difficulty}, multiplier=${getEvilFlowSpawnMultiplier()}`);
       }
     }, 60000);
 
@@ -2036,11 +2207,27 @@
         ctx.fillRect(star.x, star.y, star.size, star.size);
       });
 
-      // Center circle
-      ctx.fillStyle = '#ff0';
-      ctx.beginPath();
-      ctx.arc(gameCenterX, gameCenterY, scaledInnerR, 0, Math.PI * 2);
-      ctx.fill();
+      // Center circle (sun)
+      if (difficulty >= 10) {
+        // Difficulty 10: Red sun with glowing orange aura
+        const sunGrad = ctx.createRadialGradient(gameCenterX, gameCenterY, 0, gameCenterX, gameCenterY, scaledInnerR);
+        sunGrad.addColorStop(0, '#ff3333');
+        sunGrad.addColorStop(0.6, '#ff6633');
+        sunGrad.addColorStop(1, '#ff9933');
+        ctx.fillStyle = sunGrad;
+        ctx.shadowBlur = 30 * scaleFactor;
+        ctx.shadowColor = '#ff6600';
+        ctx.beginPath();
+        ctx.arc(gameCenterX, gameCenterY, scaledInnerR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      } else {
+        // Normal yellow sun
+        ctx.fillStyle = '#ff0';
+        ctx.beginPath();
+        ctx.arc(gameCenterX, gameCenterY, scaledInnerR, 0, Math.PI * 2);
+        ctx.fill();
+      }
       
         // Draw layer rings using fixed spacing
         // Layers are numbered 0-11, we only draw layers (MAX_LAYERS - numLayers) through (MAX_LAYERS - 1)
@@ -2309,14 +2496,41 @@
         // Create gradient for trail fade
         const grad = ctx.createLinearGradient(tailX, tailY, headX, headY);
         if (flow.isEvil) {
-          grad.addColorStop(0, 'rgba(255,64,64,0)');
-          grad.addColorStop(1, 'rgba(255,64,64,0.4)');
+          // Evil flow colors based on difficulty
+          if (difficulty >= 10) {
+            // Difficulty 10: Green with green glow
+            grad.addColorStop(0, 'rgba(50,255,50,0)');
+            grad.addColorStop(1, 'rgba(50,255,50,0.6)');
+          } else if (difficulty >= 7) {
+            // Difficulty 7-9: Black with red glow
+            grad.addColorStop(0, 'rgba(0,0,0,0)');
+            grad.addColorStop(1, 'rgba(0,0,0,0.6)');
+          } else if (difficulty >= 3) {
+            // Difficulty 3-6: Darker red
+            grad.addColorStop(0, 'rgba(200,30,30,0)');
+            grad.addColorStop(1, 'rgba(200,30,30,0.5)');
+          } else {
+            // Difficulty 1-2: Normal red
+            grad.addColorStop(0, 'rgba(255,64,64,0)');
+            grad.addColorStop(1, 'rgba(255,64,64,0.4)');
+          }
         } else {
-          grad.addColorStop(0, 'rgba(255,255,0,0)');
-          grad.addColorStop(1, 'rgba(255,255,0,0.4)');
+          // Normal flow colors
+          if (difficulty >= 10) {
+            // Difficulty 10: Glowing yellow
+            grad.addColorStop(0, 'rgba(255,255,100,0)');
+            grad.addColorStop(1, 'rgba(255,255,100,0.8)');
+          } else {
+            grad.addColorStop(0, 'rgba(255,255,0,0)');
+            grad.addColorStop(1, 'rgba(255,255,0,0.4)');
+          }
         }
 
-        ctx.lineWidth = flow.isEvil ? 5 * scaleFactor : 4 * scaleFactor;
+        const evilSizeMod = flow.isEvil ? getEvilFlowSizeModifier() : 1.0;
+        const normalSizeMod = flow.isEvil ? 1.0 : getFlowSizeModifier();
+        const totalSizeMod = evilSizeMod * normalSizeMod;
+        
+        ctx.lineWidth = flow.isEvil ? 5 * scaleFactor * totalSizeMod : 4 * scaleFactor * totalSizeMod;
         ctx.lineCap = 'round';
         ctx.strokeStyle = grad;
         ctx.beginPath();
@@ -2326,23 +2540,78 @@
 
         // Draw head with slight glow effect via double circle
         if (flow.isEvil) {
-          ctx.fillStyle = '#ff3333';
-          ctx.beginPath();
-          ctx.arc(headX, headY, 9, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = '#ff6666';
-          ctx.beginPath();
-          ctx.arc(headX, headY, 5, 0, Math.PI * 2);
-          ctx.fill();
+          if (difficulty >= 10) {
+            // Difficulty 10: Green with green glow
+            ctx.shadowBlur = 15 * scaleFactor;
+            ctx.shadowColor = '#00ff00';
+            ctx.fillStyle = '#33ff33';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 9 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#88ff88';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 5 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (difficulty >= 7) {
+            // Difficulty 7-9: Black with red glow
+            ctx.shadowBlur = 12 * scaleFactor;
+            ctx.shadowColor = '#ff0000';
+            ctx.fillStyle = '#000000';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 9 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#330000';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 5 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (difficulty >= 3) {
+            // Difficulty 3-6: Darker red
+            ctx.fillStyle = '#cc1111';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 9 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ff3333';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 5 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            // Difficulty 1-2: Normal red
+            ctx.fillStyle = '#ff3333';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 9 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#ff6666';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 5 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+          }
         } else {
-          ctx.fillStyle = '#ffff33';
-          ctx.beginPath();
-          ctx.arc(headX, headY, 8, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = '#fffacd';
-          ctx.beginPath();
-          ctx.arc(headX, headY, 4, 0, Math.PI * 2);
-          ctx.fill();
+          // Normal flows
+          if (difficulty >= 10) {
+            // Difficulty 10: Glowing yellow
+            ctx.shadowBlur = 15 * scaleFactor;
+            ctx.shadowColor = '#ffff00';
+            ctx.fillStyle = '#ffff33';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 8 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#ffffaa';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 4 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.fillStyle = '#ffff33';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 8 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#fffacd';
+            ctx.beginPath();
+            ctx.arc(headX, headY, 4 * scaleFactor * totalSizeMod, 0, Math.PI * 2);
+            ctx.fill();
+          }
         }
       });
 
@@ -3264,6 +3533,48 @@
     </div>
   {/if}
   
+  <!-- Difficulty Change Notification -->
+  {#if showDifficultyNotification}
+    <div 
+      style="
+        position: absolute; 
+        top: 50%; 
+        left: 50%; 
+        transform: translate(-50%, -50%); 
+        z-index: 999; 
+        text-align: center;
+        animation: difficultyPulse 0.5s ease-out;
+        pointer-events: none;
+      ">
+      <div style="
+        background: rgba(0, 0, 0, 0.9); 
+        padding: 30px 50px; 
+        border-radius: 15px; 
+        box-shadow: 0 8px 32px rgba(255, 100, 0, 0.5);
+        border: 3px solid rgba(255, 150, 0, 0.8);
+      ">
+        <div style="
+          font-size: 28px; 
+          color: #ff9933; 
+          font-family: 'Roboto', Arial, sans-serif; 
+          font-weight: bold;
+          text-shadow: 0 0 15px rgba(255, 150, 0, 0.8);
+          margin-bottom: 10px;
+        ">
+          DIFFICULTY {difficulty}
+        </div>
+        <div style="
+          font-size: 18px; 
+          color: #fff; 
+          font-family: 'Roboto', Arial, sans-serif;
+          line-height: 1.4;
+        ">
+          {difficultyNotification}
+        </div>
+      </div>
+    </div>
+  {/if}
+  
   <!-- Scoreboard Overlay (top-left of canvas) -->
   <div style="position: absolute; top: 0; left: 0; pointer-events: none; width: 100%; height: 100%;">
     <div style="position: absolute; top: 2.5%; left: 2.5%; pointer-events: auto;">
@@ -3360,6 +3671,7 @@
   <!-- Right side: Shoot button and Score -->
   {#if myPlayer}
     {@const myScore = players.find(p => p.id === myPlayer.playerId)?.score || 0}
+    {@const ARC_COOLDOWN_MS = getArcCooldown()}
     {@const p1CooldownRemaining = Math.max(0, ARC_COOLDOWN_MS - (currentTime - arcCooldownP1))}
     {@const p1OnCooldown = p1CooldownRemaining > 0}
     {@const p1Progress = p1OnCooldown ? (ARC_COOLDOWN_MS - p1CooldownRemaining) / ARC_COOLDOWN_MS : 1}
@@ -3452,6 +3764,7 @@
     {@const p2Player = players.find(p => p.colorIndex === player2ColorIndex)}
     {#if p2Player}
       {@const p2Score = p2Player.score || 0}
+      {@const ARC_COOLDOWN_MS = getArcCooldown()}
       {@const p2CooldownRemaining = Math.max(0, ARC_COOLDOWN_MS - (currentTime - arcCooldownP2))}
       {@const p2OnCooldown = p2CooldownRemaining > 0}
       {@const p2Progress = p2OnCooldown ? (ARC_COOLDOWN_MS - p2CooldownRemaining) / ARC_COOLDOWN_MS : 1}
@@ -3622,6 +3935,20 @@
     0% { opacity: 1; }
     70% { opacity: 1; }
     100% { opacity: 0; visibility: hidden; }
+  }
+  
+  @keyframes difficultyPulse {
+    0% { 
+      transform: translate(-50%, -50%) scale(0.8); 
+      opacity: 0; 
+    }
+    50% { 
+      transform: translate(-50%, -50%) scale(1.05); 
+    }
+    100% { 
+      transform: translate(-50%, -50%) scale(1); 
+      opacity: 1; 
+    }
   }
   
   /* Improve readability of the color dropdown in the dark debug panel */
