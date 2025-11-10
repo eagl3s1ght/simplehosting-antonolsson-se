@@ -9,7 +9,7 @@
       "players": {
         ".read": true,
         "$playerId": {
-          ".write": "auth != null && (auth.uid == $playerId || !data.exists() || auth.uid == data.child('id').val())"
+          ".write": "auth != null && (auth.uid == $playerId || !data.exists() || auth.uid == data.child('id').val() || $playerId.beginsWith('bot-') || $playerId.beginsWith('local-p2-'))"
         }
       },
       "highscores": {

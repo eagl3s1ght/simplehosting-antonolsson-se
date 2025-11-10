@@ -3,6 +3,7 @@
   import { joinGame, listenPlayers as origListenPlayers, listenFlows as origListenFlows, updateAngle, updateLayer, updateColor, incrementScore, decrementScore, spawnFlow, recordCatch, recordEvilHit, pruneOldFlows, fetchHighscores, updateFlowLayer, cleanupPlayerMeta, setPlayerActive, setLastSeen, setSessionEvilHits, incrementSessionEvilHits, cleanupInactivePlayers, cleanBotHighscores, cleanupStaleBots, auth, db, ROOM } from '$lib/firebase.js';
   import { ref, set, goOffline } from 'firebase/database';
   import { browser, dev } from '$app/environment';
+  import MigrationButton from '$lib/MigrationButton.svelte';
 
   // Debug-only imports (conditional, tree-shaken in production)
   let removeAllFlows: any, removeLayer5Flows: any, analyzeDbSize: any;
@@ -2584,6 +2585,9 @@
 <svelte:head>
   <title>Flow ~together~ made with 🩸, 💦 & ❤️ by a gothenburgian</title>
 </svelte:head>
+
+<!-- Firestore Migration Button (dev only) -->
+<MigrationButton />
 
 {#if dev}
 <div style="position: absolute; top: 10px; right: 10px; z-index: 10;">

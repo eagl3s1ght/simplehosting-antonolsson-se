@@ -21,6 +21,7 @@ export async function removeAllFlows() {
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously } from 'firebase/auth';
 import { getDatabase, ref, onValue, set, push, runTransaction, goOffline, goOnline, query, orderByChild, limitToLast, endAt, get, remove, equalTo } from 'firebase/database';
+import { getFirestore, collection, query as fsQuery, orderBy as fsOrderBy, limit as fsLimit, getDocs, addDoc, updateDoc, doc, where } from 'firebase/firestore';
 import { v4 as uuidv4 } from 'uuid';
 const firebaseConfig = {
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -35,6 +36,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getDatabase(app);
+export const fsDb = getFirestore(app);  // Firestore instance for high scores
 
 export const ROOM = 'publicGame';  // Single global room
 
@@ -647,5 +649,91 @@ export async function cleanupStaleBots() {
   } catch (e) {
     console.error('cleanupStaleBots error:', e);
     return 0;
+  }
+}
+
+// ==================== FIRESTORE HIGH SCORES ====================
+// New Firestore-based high score functions for better performance and scalability
+
+/**
+ * Save or update a high score in Firestore
+ * @param {string} name - Player display name
+ * @param {number} score - Total catches score
+ * @param {number} [colorIndex] - Player color index
+ * @param {string} [country] - Two-letter country code
+ * @returns {Promise<void>}
+ */
+export async function saveHighScoreFirestore(name, score, colorIndex, country) {
+  if (!auth.currentUser) {
+    console.warn('[Firestore] Cannot save high score: user not authenticated');
+    return;
+  }
+  
+  const uid = auth.currentUser.uid;
+  
+  // Don't save for bots or local co-op players
+  if (uid.startsWith('bot-') || uid.startsWith('local-p2-')) {
+    return;
+  }
+  
+  try {
+    // Check if user already has a high score document
+    const q = fsQuery(collection(fsDb, 'highScores'), where('userId', '==', uid));
+    const snap = await getDocs(q);
+    
+    if (snap.empty) {
+      // Create new high score document
+      await addDoc(collection(fsDb, 'highScores'), {
+        userId: uid,
+        name: name || 'Anonymous',
+        score: score,
+        colorIndex: colorIndex || 0,
+        country: country || null,
+        date: new Date(),
+        lastUpdated: new Date()
+      });
+      console.log(`[Firestore] Created new high score for ${name}: ${score}`);
+    } else {
+      // Update existing high score (only if new score is higher)
+      const docRef = doc(fsDb, 'highScores', snap.docs[0].id);
+      const existingData = snap.docs[0].data();
+      
+      if (score > (existingData.score || 0)) {
+        await updateDoc(docRef, {
+          name: name || existingData.name || 'Anonymous',
+          score: score,
+          colorIndex: colorIndex !== undefined ? colorIndex : existingData.colorIndex,
+          country: country || existingData.country,
+          lastUpdated: new Date()
+        });
+        console.log(`[Firestore] Updated high score for ${name}: ${existingData.score} → ${score}`);
+      }
+    }
+  } catch (error) {
+    console.error('[Firestore] Error saving high score:', error);
+  }
+}
+
+/**
+ * Fetch top high scores from Firestore
+ * @param {number} [limitCount=10] - Number of scores to fetch
+ * @returns {Promise<any[]>}
+ */
+export async function getHighScoresFirestore(limitCount = 10) {
+  try {
+    const q = fsQuery(
+      collection(fsDb, 'highScores'),
+      fsOrderBy('score', 'desc'),
+      fsLimit(limitCount)
+    );
+    const snap = await getDocs(q);
+    
+    return snap.docs.map(d => ({
+      id: d.id,
+      ...d.data()
+    }));
+  } catch (error) {
+    console.error('[Firestore] Error fetching high scores:', error);
+    return [];
   }
 }

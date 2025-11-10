@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // High scores collection
+    match /highScores/{docId} {
+      // Anyone can read the leaderboard (public)
+      allow read: if true;
+      
+      // Only authenticated users can create their OWN high scores
+      allow create: if request.auth != null 
+                    && request.resource.data.keys().hasAll(['userId', 'name', 'score'])
+                    && request.resource.data.score is number
+                    && request.resource.data.score >= 0
+                    && request.resource.data.userId == request.auth.uid;  // SECURE: Only own ID
+      
+      // Only the owner can update their own high score
+      allow update: if request.auth != null 
+                    && resource.data.userId == request.auth.uid
+                    && request.resource.data.userId == request.auth.uid
+                    && request.resource.data.score is number
+                    && request.resource.data.score >= 0;
+      
+      // Only the owner can delete their high score
+      allow delete: if request.auth != null 
+                    && resource.data.userId == request.auth.uid;
+    }
+  }
+}
