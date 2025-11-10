@@ -863,7 +863,6 @@
     // Sync VIP skins to Firebase so other players can see them
     if (myPlayer?.playerId) {
       updateVipSkins(myPlayer.playerId, vipGlow, vipGolden, vipBlackStars);
-      console.log('[VIP] Synced skins to Firebase for player:', myPlayer.playerId, { vipGlow, vipGolden, vipBlackStars });
     }
   }
   const toggleDebug = dev ? () => { debugOpen = !debugOpen; } : () => {};
@@ -1745,7 +1744,6 @@
       
       // Sync VIP skins to Firebase immediately after joining
       updateVipSkins(myPlayer.playerId, vipGlow, vipGolden, vipBlackStars);
-      console.log('[VIP] Initial sync to Firebase:', { vipGlow, vipGolden, vipBlackStars });
       
       // Start presence heartbeat (every 5s for better visibility)
       presenceInterval = setInterval(() => {
@@ -1764,15 +1762,6 @@
 
       unsubPlayers = listenPlayers(p => {
         players = p;
-        
-        // Debug: Log VIP skins from Firebase for all players
-        if (dev) {
-          players.forEach(pl => {
-            if (pl?.vipSkins && (pl.vipSkins.glow || pl.vipSkins.golden || pl.vipSkins.blackStars)) {
-              console.log('[VIP] Player', pl.id?.slice(0, 8), 'has VIP skins:', pl.vipSkins);
-            }
-          });
-        }
         
         if (myPlayer) {
           // Check if my player was marked inactive
@@ -2515,6 +2504,11 @@
     // Use fixed layer spacing - layers are numbered 0-11, where 11 is outermost
     const layerRadius = scaledInnerR + scaledLayerSpacing * (playerLayer + 1);
         
+        // Get the player's angle (use myAngle for my player, p.angle for others)
+        const angle = isMyPlayer ? myAngle : p.angle;
+        const startA = normalizeAngle(angle - PIPE_WIDTH / 2);
+        const endA = normalizeAngle(angle + PIPE_WIDTH / 2);
+        
         // VIP Glow effect (add outer glow)
         if (playerVipGlow) {
           ctx.save();
@@ -2524,18 +2518,12 @@
           ctx.lineWidth = 25 * scaleFactor;
           ctx.lineCap = 'round';
           ctx.beginPath();
-          const angle = myAngle;
-          const startA = normalizeAngle(angle - PIPE_WIDTH / 2);
-          const endA = normalizeAngle(angle + PIPE_WIDTH / 2);
           ctx.arc(gameCenterX, gameCenterY, layerRadius, startA, endA);
           ctx.stroke();
           ctx.restore();
         }
         
         // Main player fragment
-        const angle = isMyPlayer ? myAngle : p.angle;
-        const startA = normalizeAngle(angle - PIPE_WIDTH / 2);
-        const endA = normalizeAngle(angle + PIPE_WIDTH / 2);
         
         // VIP Golden shimmer effect
         if (playerVipGolden) {
