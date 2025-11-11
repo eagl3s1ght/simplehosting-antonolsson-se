@@ -13,7 +13,7 @@
         }
       }
     },
-    ".read": "now < 1765062000000",
+    ".read": false,
     ".write": false
   }
 }
