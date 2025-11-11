@@ -233,6 +233,11 @@
   let vipGolden = false;
   let vipBlackStars = false;
   
+  // Version check
+  const CURRENT_VERSION = '0.0.1'; // Update this when deploying new versions
+  let isOutdated = false;
+  let showOutdatedDialog = false;
+  
   // Nest render logging flag (log only once)
   let nestRenderLogged = false;
 
@@ -533,6 +538,48 @@
     };
   }
   
+  // Version check function
+  async function checkVersion() {
+    try {
+      // Fetch version.json from the server (with cache busting)
+      const response = await fetch(`/version.json?t=${Date.now()}`);
+      if (!response.ok) {
+        console.log('[Version] Could not fetch version info');
+        return;
+      }
+      
+      const data = await response.json();
+      const serverVersion = data.version || '0.0.1';
+      
+      // Check if stored version is different
+      const storedVersion = localStorage.getItem('appVersion');
+      
+      if (storedVersion && storedVersion !== serverVersion) {
+        // Version changed - show outdated dialog
+        isOutdated = true;
+        showOutdatedDialog = true;
+        console.log('[Version] Outdated version detected. Current:', storedVersion, 'Server:', serverVersion);
+      } else {
+        console.log('[Version] Up to date:', serverVersion);
+      }
+      
+      // Store current version
+      localStorage.setItem('appVersion', serverVersion);
+    } catch (error) {
+      console.log('[Version] Version check failed:', error);
+    }
+  }
+  
+  function reloadPage() {
+    // Clear cache and reload
+    if ('caches' in window) {
+      caches.keys().then(names => {
+        names.forEach(name => caches.delete(name));
+      });
+    }
+    window.location.reload();
+  }
+  
   function createYouTubePlayer() {
     if (!isYouTubeReady || youtubePlayer) return;
     
@@ -782,6 +829,9 @@
       
       // Auto-start YouTube API
       loadYouTubeAPI();
+      
+      // Check for version updates
+      checkVersion();
     }
     // Try to load external libs dynamically (non-blocking)
     import('unique-names-generator').then((m) => { uniqGen = m.uniqueNamesGenerator; dictAdj = m.adjectives; dictAnimals = m.animals; }).catch(() => {});
@@ -3516,6 +3566,13 @@
     </label>
   </div>
   
+  <div style="margin-top: 12px; background: #2a1a1a; padding: 10px; border-radius: 6px; border: 1px solid #5a3a3a;">
+    <b style="color: #ff9800;">🔧 Testing Tools</b>
+    <button style="margin-top: 8px; width: 100%; padding: 8px; background: #ff9800; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;" on:click={() => { showOutdatedDialog = true; }}>
+      Preview Outdated Version Dialog
+    </button>
+  </div>
+  
   <div style="margin-top: 12px; font-size: 14px;">
     <b>DB Download:</b><br />
     { (dbBytesPerSecond/1024).toFixed(2) } KB/s<br />
@@ -3841,6 +3898,25 @@
     </div>
   </div>
 </div>
+
+
+<!-- Outdated Version Dialog -->
+{#if showOutdatedDialog}
+<div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 101; display: flex; align-items: center; justify-content: center;">
+  <div style="background: #222; color: #fff; padding: 30px 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); text-align: center; max-width: 450px;">
+    <h2 style="margin: 0 0 16px 0; font-size: 24px; color: #ff9800;">⚠️ Game Outdated</h2>
+    <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.5;">
+      A new version of the game is available! Please clear your cache and reload to get the latest features and bug fixes.
+    </p>
+    <button on:click={reloadPage} style="background: #ff9800; color: #fff; border: none; border-radius: 6px; padding: 12px 24px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.2s;">
+      Clear Cache & Reload
+    </button>
+    <button on:click={() => showOutdatedDialog = false} style="background: transparent; color: #999; border: 1px solid #555; border-radius: 6px; padding: 12px 24px; font-size: 14px; cursor: pointer; margin-left: 12px; transition: all 0.2s;">
+      Continue Anyway
+    </button>
+  </div>
+</div>
+{/if}
 
 <!-- Inactive Player Dialog -->
 {#if showInactiveDialog}
