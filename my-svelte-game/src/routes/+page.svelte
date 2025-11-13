@@ -2980,16 +2980,43 @@
         ctx.stroke();
 
         // Speed boost indicator (draw small triangles/chevrons if myPlayer has boosts)
+        // Max 30 markers arranged in 3 lines (10 per line) spread over more width behind player
         if (isMyPlayer && mySpeedBoost > 0) {
           const midAngle = angle;
-          const numChevrons = Math.min(3, mySpeedBoost); // 1 chevron per boost, max 3 visible
-          const chevronGap = 12 * scaleFactor;
-          const baseOffset = layerRadius + 18 * scaleFactor;
-          for (let c = 0; c < numChevrons; c++) {
-            const offset = baseOffset + c * chevronGap;
-            const cx = gameCenterX + Math.cos(midAngle) * offset;
-            const cy = gameCenterY + Math.sin(midAngle) * offset;
-            const size = 6 * scaleFactor;
+          const totalMarkers = Math.min(30, mySpeedBoost); // Max 30 markers
+          const markersPerLine = 10; // 10 markers per line
+          const numLines = 3; // 3 lines of markers
+          
+          const chevronGap = 8 * scaleFactor; // Distance between markers in same line
+          const lineSpacing = 10 * scaleFactor; // Distance between lines (radially)
+          const lateralSpread = 6 * scaleFactor; // How far markers spread perpendicular to radius
+          const baseOffset = layerRadius + 18 * scaleFactor; // Starting distance from player
+          
+          for (let i = 0; i < totalMarkers; i++) {
+            // Determine which line this marker is on (0, 1, or 2)
+            const lineIndex = Math.floor(i / markersPerLine);
+            // Position within the line (0-9)
+            const posInLine = i % markersPerLine;
+            
+            // Radial offset (distance from player fragment)
+            const radialOffset = baseOffset + lineIndex * lineSpacing;
+            
+            // Lateral offset (perpendicular to radius) - spread markers across width
+            // Center the markers: range from -4.5 to +4.5 lateralSpread units
+            const lateralOffset = (posInLine - 4.5) * (lateralSpread / 2);
+            
+            // Calculate marker position
+            // Base position along radius
+            const baseX = gameCenterX + Math.cos(midAngle) * radialOffset;
+            const baseY = gameCenterY + Math.sin(midAngle) * radialOffset;
+            
+            // Apply lateral offset (perpendicular to radius)
+            const perpAngle = midAngle + Math.PI / 2;
+            const cx = baseX + Math.cos(perpAngle) * lateralOffset;
+            const cy = baseY + Math.sin(perpAngle) * lateralOffset;
+            
+            const size = 5 * scaleFactor; // Slightly smaller markers
+            
             // Draw a small forward-facing triangle (speed indicator)
             ctx.save();
             ctx.translate(cx, cy);
