@@ -74,6 +74,10 @@
   let showInactiveDialog = false; // true when player marked inactive
   let keys: Record<string, boolean> = {};
   const PIPE_WIDTH = 0.4;
+  // Collision width accounts for the visual round caps (lineCap: 'round')
+  // The round caps extend the visual appearance by ~lineWidth/2 at each end
+  // At typical layer radius (~300px), 12.5px cap ≈ 0.042 radians per side
+  const COLLISION_WIDTH = PIPE_WIDTH + 0.09; // Add ~0.045 radians to each side
   
   // Layer system - dynamic layers (1 per active player, max 12)
   const MAX_LAYERS = 12;
@@ -1253,9 +1257,10 @@
   }
   
   function checkCollision(flowAngle: number, playerAngle: number): boolean {
-    // Player arc spans from (angle - PIPE_WIDTH/2) to (angle + PIPE_WIDTH/2)
-    const playerStart = normalizeAngle(playerAngle - PIPE_WIDTH / 2);
-    const playerEnd = normalizeAngle(playerAngle + PIPE_WIDTH / 2);
+    // Player arc spans from (angle - COLLISION_WIDTH/2) to (angle + COLLISION_WIDTH/2)
+    // COLLISION_WIDTH accounts for the visual round caps on the arc
+    const playerStart = normalizeAngle(playerAngle - COLLISION_WIDTH / 2);
+    const playerEnd = normalizeAngle(playerAngle + COLLISION_WIDTH / 2);
     const normFlow = normalizeAngle(flowAngle);
     
     // Check if flow angle falls within player arc
