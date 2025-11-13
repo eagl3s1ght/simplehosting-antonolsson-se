@@ -183,7 +183,10 @@
   let mobileControlTopDistance = 60; // Distance from top of viewport
   
   // Splash screen
-  let showSplash = true;
+  let showSplash = false; // Will be set to true after localStorage check
+  let splashFading = false; // Controls fade animation for returning visitors
+  let isFirstVisit = true; // Will be loaded from localStorage
+  let showHowToPlay = false; // Controls the how-to-play dialog
   
   // Starfield background
   type Star = { x: number; y: number; size: number; opacity: number; twinkleSpeed: number; twinklePhase: number };
@@ -473,6 +476,24 @@
   function mailtoAuthor() {
     window.location.href = 'mailto:eagleenterprises08+flowtogether@gmail.com';
     closeContextMenu();
+  }
+  
+  function startPlaying() {
+    showSplash = false;
+    isFirstVisit = false;
+    if (browser) {
+      localStorage.setItem('hasVisitedBefore', '1');
+      console.log('[Splash] Marked user as returning visitor');
+    }
+  }
+  
+  function openHowToPlay() {
+    showHowToPlay = true;
+    closeContextMenu();
+  }
+  
+  function closeHowToPlay() {
+    showHowToPlay = false;
   }
   
   function toggleBackgroundMusic() {
@@ -787,6 +808,16 @@
         autoSpawnBotOnJoin = autoSpawnBotSaved === '1';
         console.log('[Bot] Auto-spawn on join loaded from storage:', autoSpawnBotOnJoin);
       }
+      // Load first visit flag
+      const firstVisitSaved = localStorage.getItem('hasVisitedBefore');
+      if (firstVisitSaved === '1') {
+        isFirstVisit = false; // User has visited before
+        console.log('[Splash] User has visited before, will auto-close splash');
+      } else {
+        console.log('[Splash] First visit detected, will show rules on splash');
+      }
+      // Now show splash screen after checking first visit status
+      showSplash = true;
       // Load VIP settings
       const vipGlowSaved = localStorage.getItem('vipGlow');
       if (vipGlowSaved !== null) {
@@ -1821,10 +1852,19 @@
   onMount(() => {
     if (!browser) return;
     canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
+    if (!canvas) {
+      console.error('[Canvas] Canvas element not found');
+      return;
+    }
     ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+    if (!ctx) {
+      console.error('[Canvas] Could not get 2D context');
+      return;
+    }
     
     // Make canvas fill viewport
     const updateCanvasSize = () => {
+      if (!canvas) return;
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
       // Regenerate stars to match new canvas size
@@ -1846,10 +1886,17 @@
     // Check local co-op support
     checkLocalCoopSupport();
     
-    // Fade out splash screen after 3 seconds
-    setTimeout(() => {
-      showSplash = false;
-    }, 3000);
+    // Fade out splash screen: show for 1 second, then fade out over 1 second (only for returning visitors)
+    if (!isFirstVisit) {
+      setTimeout(() => {
+        splashFading = true; // Start fade animation
+      }, 1000); // Wait 1 second before starting fade
+      
+      setTimeout(() => {
+        showSplash = false; // Remove from DOM after fade completes
+      }, 2100); // 1s visible + 1s fade + 0.1s buffer
+    }
+    // First-time visitors will see rules and must click "Start Playing"
     
     // Initialize previousDifficulty to avoid showing notification on mount
     previousDifficulty = difficulty;
@@ -4093,6 +4140,7 @@
   <!-- Splash Screen Overlay -->
   {#if showSplash}
     <div 
+      class:splash-fade={splashFading}
       style="
         position: absolute; 
         top: 50%; 
@@ -4100,19 +4148,21 @@
         transform: translate(-50%, -50%); 
         z-index: 1000; 
         text-align: center;
-        animation: fadeOut 3s ease-out forwards;
-        pointer-events: none;
+        pointer-events: {isFirstVisit ? 'auto' : 'none'};
       ">
       <div style="
-        background: rgba(0, 0, 0, 0.85); 
-        padding: 40px 60px; 
+        background: rgba(0, 0, 0, 0.95); 
+        padding: {isFirstVisit ? '30px 40px' : '40px 60px'}; 
         border-radius: 20px; 
         box-shadow: 0 8px 32px rgba(255, 215, 0, 0.3);
         border: 2px solid rgba(255, 215, 0, 0.5);
+        max-width: {isFirstVisit ? '600px' : 'none'};
+        max-height: {isFirstVisit ? '80vh' : 'none'};
+        overflow-y: {isFirstVisit ? 'auto' : 'visible'};
       ">
         <h1 style="
-          margin: 0 0 20px 0; 
-          font-size: 48px; 
+          margin: 0 0 {isFirstVisit ? '15px' : '20px'} 0; 
+          font-size: {isFirstVisit ? '40px' : '48px'}; 
           color: #ffd700; 
           font-family: 'Roboto', Arial, sans-serif; 
           font-weight: bold;
@@ -4120,22 +4170,79 @@
         ">
           Flow ~together~
         </h1>
-        <p style="
-          margin: 10px 0; 
-          font-size: 18px; 
-          color: #fff; 
-          font-family: 'Roboto', Arial, sans-serif;
-        ">
-          made with 🩸, 💦 & ❤️
-        </p>
-        <p style="
-          margin: 10px 0; 
-          font-size: 16px; 
-          color: #aaa; 
-          font-family: 'Roboto', Arial, sans-serif;
-        ">
-          by a gothenburgian
-        </p>
+        
+        {#if isFirstVisit}
+          <div style="text-align: left; margin: 20px 0; color: #fff; font-family: 'Roboto', Arial, sans-serif;">
+            <h2 style="color: #ffd700; font-size: 24px; margin: 15px 0 10px 0; text-align: center;">🎮 How to Play</h2>
+            
+            <h3 style="color: #ffeb3b; font-size: 18px; margin: 15px 0 8px 0;">🎯 Objective</h3>
+            <p style="margin: 5px 0; line-height: 1.6;">Catch <span style="color: #ffd700;">yellow flows</span> to earn points while avoiding <span style="color: #ff4444;">evil flows</span>. Compete with other players to reach the top of the leaderboard!</p>
+            
+            <h3 style="color: #ffeb3b; font-size: 18px; margin: 15px 0 8px 0;">🕹️ Controls</h3>
+            <ul style="margin: 5px 0; line-height: 1.8; padding-left: 20px;">
+              <li><b>Arrow Keys / WASD:</b> Move your fragment clockwise/counterclockwise</li>
+              <li><b>Q / E:</b> Move between layers (closer/farther from sun)</li>
+              <li><b>Space:</b> Shoot arc to catch flows</li>
+              <li><b>Right-Click:</b> Open game menu</li>
+            </ul>
+            
+            <h3 style="color: #ffeb3b; font-size: 18px; margin: 15px 0 8px 0;">⚡ Gameplay</h3>
+            <ul style="margin: 5px 0; line-height: 1.8; padding-left: 20px;">
+              <li><span style="color: #ffd700;">Yellow flows</span> give you <b>+1 point</b> and increase your speed</li>
+              <li><span style="color: #ff4444;">Evil flows</span> subtract points and slow you down</li>
+              <li>Higher difficulty = more flows, faster gameplay, bigger rewards</li>
+              <li>Claim a nest (colored spot) to become a permanent player</li>
+              <li>Players on the same layer cannot overlap positions</li>
+            </ul>
+            
+            <h3 style="color: #ffeb3b; font-size: 18px; margin: 15px 0 8px 0;">🏆 Victory</h3>
+            <p style="margin: 5px 0; line-height: 1.6;">The game progresses through <b>10 difficulty levels</b> with increasing challenges. After reaching difficulty 10, the game ends and the player with the highest score wins! Top players get permanent spots in the Hall of Fame.</p>
+          </div>
+          
+          <button 
+            on:click={startPlaying}
+            style="
+              background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+              color: #000;
+              border: none;
+              border-radius: 12px;
+              padding: 15px 40px;
+              font-size: 20px;
+              font-weight: bold;
+              cursor: pointer;
+              margin-top: 20px;
+              box-shadow: 0 4px 15px rgba(255, 215, 0, 0.4);
+              transition: all 0.2s;
+            "
+            on:mouseenter={(e) => {
+              e.currentTarget.style.transform = 'scale(1.05)';
+              e.currentTarget.style.boxShadow = '0 6px 20px rgba(255, 215, 0, 0.6)';
+            }}
+            on:mouseleave={(e) => {
+              e.currentTarget.style.transform = 'scale(1)';
+              e.currentTarget.style.boxShadow = '0 4px 15px rgba(255, 215, 0, 0.4)';
+            }}
+          >
+            🚀 Start Playing!
+          </button>
+        {:else}
+          <p style="
+            margin: 10px 0; 
+            font-size: 18px; 
+            color: #fff; 
+            font-family: 'Roboto', Arial, sans-serif;
+          ">
+            made with 🩸, 💦 & ❤️
+          </p>
+          <p style="
+            margin: 10px 0; 
+            font-size: 16px; 
+            color: #aaa; 
+            font-family: 'Roboto', Arial, sans-serif;
+          ">
+            by a gothenburgian
+          </p>
+        {/if}
       </div>
     </div>
   {/if}
@@ -4238,6 +4345,88 @@
     <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.5;">Your session was paused due to inactivity. Click the button below to refresh and rejoin the game.</p>
     <button on:click={() => location.reload()} style="background: #4CAF50; color: #fff; border: none; border-radius: 6px; padding: 12px 24px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.2s;">
       Refresh & Rejoin
+    </button>
+  </div>
+</div>
+{/if}
+
+<!-- How to Play Dialog -->
+{#if showHowToPlay}
+<div 
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="how-to-play-title"
+  tabindex="-1"
+  style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 101; display: flex; align-items: center; justify-content: center; overflow-y: auto; padding: 20px;"
+  on:click={closeHowToPlay}
+  on:keydown={(e) => e.key === 'Escape' && closeHowToPlay()}
+>
+  <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+  <div 
+    role="document"
+    style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #fff; padding: 30px 40px; border-radius: 20px; box-shadow: 0 8px 40px rgba(0,0,0,0.7); max-width: 600px; width: 90%; border: 2px solid rgba(255, 215, 0, 0.5);"
+    on:click|stopPropagation
+    on:keydown|stopPropagation
+  >
+    <h1 id="how-to-play-title" style="margin: 0 0 20px 0; font-size: 36px; color: #ffd700; text-shadow: 0 0 20px rgba(255, 215, 0, 0.5); text-align: center;">
+      🎮 How to Play
+    </h1>
+    
+    <div style="text-align: left; line-height: 1.6;">
+      <h2 style="color: #ffeb3b; font-size: 22px; margin: 20px 0 10px 0;">🎯 Objective</h2>
+      <p style="margin: 8px 0;">
+        Catch <span style="color: #ffd700; font-weight: bold;">yellow flows</span> to earn points while avoiding <span style="color: #ff4444; font-weight: bold;">evil flows</span>. Compete with other players to reach the top of the leaderboard!
+      </p>
+      
+      <h2 style="color: #ffeb3b; font-size: 22px; margin: 20px 0 10px 0;">🕹️ Controls</h2>
+      <ul style="margin: 8px 0; padding-left: 20px;">
+        <li style="margin: 5px 0;"><b>Arrow Keys / WASD:</b> Move your fragment clockwise/counterclockwise</li>
+        <li style="margin: 5px 0;"><b>Q / E:</b> Move between layers (closer/farther from sun)</li>
+        <li style="margin: 5px 0;"><b>Space:</b> Shoot arc to catch flows</li>
+        <li style="margin: 5px 0;"><b>Right-Click:</b> Open game menu</li>
+      </ul>
+      
+      <h2 style="color: #ffeb3b; font-size: 22px; margin: 20px 0 10px 0;">⚡ Gameplay</h2>
+      <ul style="margin: 8px 0; padding-left: 20px;">
+        <li style="margin: 5px 0;"><span style="color: #ffd700;">Yellow flows</span> give you <b>+1 point</b> and increase your speed</li>
+        <li style="margin: 5px 0;"><span style="color: #ff4444;">Evil flows</span> subtract points and slow you down</li>
+        <li style="margin: 5px 0;">Higher difficulty = more flows, faster gameplay, bigger rewards</li>
+        <li style="margin: 5px 0;">Claim a nest (colored spot) to become a permanent player</li>
+        <li style="margin: 5px 0;">Players on the same layer cannot overlap positions</li>
+      </ul>
+      
+      <h2 style="color: #ffeb3b; font-size: 22px; margin: 20px 0 10px 0;">🏆 Victory</h2>
+      <p style="margin: 8px 0;">
+        The game progresses through <b>10 difficulty levels</b> with increasing challenges. After reaching difficulty 10, the game ends and the player with the highest score wins! Top players get permanent spots in the Hall of Fame.
+      </p>
+    </div>
+    
+    <button 
+      on:click={closeHowToPlay}
+      style="
+        background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+        color: #000;
+        border: none;
+        border-radius: 12px;
+        padding: 12px 30px;
+        font-size: 18px;
+        font-weight: bold;
+        cursor: pointer;
+        margin-top: 25px;
+        width: 100%;
+        box-shadow: 0 4px 15px rgba(255, 215, 0, 0.4);
+        transition: all 0.2s;
+      "
+      on:mouseenter={(e) => {
+        e.currentTarget.style.transform = 'scale(1.02)';
+        e.currentTarget.style.boxShadow = '0 6px 20px rgba(255, 215, 0, 0.6)';
+      }}
+      on:mouseleave={(e) => {
+        e.currentTarget.style.transform = 'scale(1)';
+        e.currentTarget.style.boxShadow = '0 4px 15px rgba(255, 215, 0, 0.4)';
+      }}
+    >
+      Got it! 👍
     </button>
   </div>
 </div>
@@ -4557,9 +4746,12 @@
   :global(html, body) { margin: 0; background: #111; }
   canvas { max-width: 100vw; max-height: 100vh; object-fit: contain; }
   
+  .splash-fade {
+    animation: fadeOut 1s ease-out forwards;
+  }
+  
   @keyframes fadeOut {
     0% { opacity: 1; }
-    70% { opacity: 1; }
     100% { opacity: 0; visibility: hidden; }
   }
   
@@ -4825,6 +5017,13 @@
       class="context-menu-item"
     >
       Become Inactive
+    </button>
+    
+    <button
+      on:click={openHowToPlay}
+      class="context-menu-item"
+    >
+      📖 How to Play
     </button>
     
     <button
