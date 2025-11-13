@@ -3393,12 +3393,19 @@
             if (arc.destroyedFlows.has(flowId)) return;
             
             const flowAngle = flow.angle;
-            const flowLayer = flow.layer ?? 0;
             
-            // Check if wave has reached this flow's layer
-            const distanceFromWave = Math.abs(flowLayer - waveCenter);
+            // Calculate the actual current position of the flow based on progress
+            const flowProgress = ((nowMs - flow.spawnTime) / getFlowDuration(flow)) * speedBiasForAngle(flow.angle);
+            const flowRadius = INNER_R + flowProgress * (MAX_FLOW_RADIUS - INNER_R);
             
-            // Only destroy if wave is at this layer (within wave width)
+            // Convert flow radius to layer equivalent for comparison with wave
+            // Each layer is FIXED_LAYER_SPACING pixels apart
+            const flowLayerEquivalent = (flowRadius - INNER_R) / FIXED_LAYER_SPACING - 1;
+            
+            // Check if wave has reached this flow's position
+            const distanceFromWave = Math.abs(flowLayerEquivalent - waveCenter);
+            
+            // Only destroy if wave is at this position (within wave width)
             if (distanceFromWave > waveWidth) return;
             
             // Check angle
@@ -3410,7 +3417,7 @@
             if (evilCount <= 3) {
               console.log('[Arc] Checking evil flow:', {
                 flowId,
-                flowLayer,
+                flowLayerEquivalent: flowLayerEquivalent.toFixed(2),
                 waveCenter: waveCenter.toFixed(2),
                 distanceFromWave: distanceFromWave.toFixed(2),
                 flowAngle: (flowAngle * 180 / Math.PI).toFixed(1) + '°',
@@ -3433,7 +3440,7 @@
               console.log('[Arc] 💥 DESTROYING FLOW!', {
                 flowId,
                 dbKey,
-                flowLayer,
+                flowLayerEquivalent: flowLayerEquivalent.toFixed(2),
                 waveCenter: waveCenter.toFixed(2),
                 distanceFromWave: distanceFromWave.toFixed(2),
                 flowAngle: (flowAngle * 180 / Math.PI).toFixed(1) + '°',
