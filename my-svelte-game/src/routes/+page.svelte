@@ -1231,6 +1231,7 @@
   // Burst spawner: create N flows over 500ms with random jitter and angle-influenced speed offset
   function spawnBurst(count: number, evilFraction = 0) {
     const now = Date.now();
+    const spawnDuration = currentFlowDuration(); // Capture duration at spawn time
     for (let i = 0; i < count; i++) {
       const delay = Math.random() * 500; // within .5s
       const isEvil = Math.random() < evilFraction;
@@ -1239,7 +1240,7 @@
         const angleSeed = Math.random() * Math.PI * 2; // to keep existing randomness; could derive deterministic later
         const speedBias = (Math.sin(angleSeed * 3) + 1) / 2; // 0..1
         const extraSpeed = 1 + (speedBias - 0.5) * 0.2; // +/-10%
-        spawnFlow(isEvil, { speedBias: Number(extraSpeed.toFixed(3)) });
+        spawnFlow(isEvil, { speedBias: Number(extraSpeed.toFixed(3)), duration: spawnDuration });
         recordFlowSpawn();
         if (isEvil) recordEvilFlowSpawn();
       }, delay);
@@ -1254,6 +1255,11 @@
     // Map sin to ~±10-12% variation
     const s = Math.sin(angle * 3.137); // irrational-ish multiplier to avoid symmetry
     return 1 + s * 0.12; // 0.88x .. 1.12x
+  }
+  
+  // Get the duration for a flow, using stored duration if available (for consistency across game speed changes)
+  function getFlowDuration(flow: any): number {
+    return flow.duration || currentFlowDuration();
   }
   
   function checkCollision(flowAngle: number, playerAngle: number): boolean {
@@ -1313,7 +1319,7 @@
     if (scoredFlows.has(flowId) || flowsToRemove.has(flowId)) return;
     
     const now = Date.now();
-    const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+    const progress = ((now - flow.spawnTime) / getFlowDuration(flow)) * speedBiasForAngle(flow.angle);
     const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
     
     // Nest collision detector is at the outer border (outermostRadius + 12.5)
@@ -1390,7 +1396,7 @@
     if (scoredFlows.has(flowId) || flowsToRemove.has(flowId)) return;
     
   const now = Date.now();
-  const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+  const progress = ((now - flow.spawnTime) / getFlowDuration(flow)) * speedBiasForAngle(flow.angle);
     const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
 
     // Determine target radius for this player using fixed layer position
@@ -1466,7 +1472,7 @@
     if (scoredFlows.has(flowId) || flowsToRemove.has(flowId)) return;
     
     const now = Date.now();
-    const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+    const progress = ((now - flow.spawnTime) / getFlowDuration(flow)) * speedBiasForAngle(flow.angle);
     const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
     const targetRadius = INNER_R + FIXED_LAYER_SPACING * (player2Layer + 1);
     
@@ -1523,7 +1529,7 @@
       let minAngleDist = Infinity;
       
       flowCache.forEach((flow) => {
-        const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+        const progress = ((now - flow.spawnTime) / getFlowDuration(flow)) * speedBiasForAngle(flow.angle);
         const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
         
         // Check if flow is approaching bot's layer
@@ -1645,7 +1651,7 @@
         const flowId = `${flow.spawnTime}_${flow.angle.toFixed(4)}`;
         if (scoredFlows.has(flowId) || flowsToRemove.has(flowId)) return;
         
-        const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+        const progress = ((now - flow.spawnTime) / getFlowDuration(flow)) * speedBiasForAngle(flow.angle);
         const flowRadius = INNER_R + progress * (MAX_FLOW_RADIUS - INNER_R);
         const targetRadius = INNER_R + FIXED_LAYER_SPACING * (botPlayer.layer + 1);
         
@@ -3094,7 +3100,7 @@
   const overshootPx = 240 * scaleFactor; // keep flows until further past canvas edge (doubled)
       flowCache.forEach((flow, id) => {
         if (flowsToRemove.has(id)) return; // collided -> skip
-        const progress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+        const progress = ((now - flow.spawnTime) / getFlowDuration(flow)) * speedBiasForAngle(flow.angle);
   const flowRadius = scaledInnerR + progress * (maxGameRadius - scaledInnerR);
   // If flow exits beyond the canvas (outside render radius), tag it as layer 5 once
   if (flow.layer !== 5 && flowRadius > maxGameRadius) {
@@ -3120,7 +3126,7 @@
       });
       
       activeFlows.forEach(flow => {
-        const rawProgress = ((now - flow.spawnTime) / currentFlowDuration()) * speedBiasForAngle(flow.angle);
+        const rawProgress = ((now - flow.spawnTime) / getFlowDuration(flow)) * speedBiasForAngle(flow.angle);
         const r = scaledInnerR + rawProgress * (maxGameRadius - scaledInnerR);
         const headX = gameCenterX + Math.cos(flow.angle) * r;
         const headY = gameCenterY + Math.sin(flow.angle) * r;

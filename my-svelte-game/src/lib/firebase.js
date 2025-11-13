@@ -307,7 +307,7 @@ export function decrementScore(playerId) {
 export function spawnFlow(isEvil = false, extra = {}) {
   const flowRef = ref(db, `${ROOM}/flows`);
   const now = Date.now();
-  const layer = Math.floor(Math.random() * 5);
+  const layer = 0; // Always spawn at layer 0 (center/sun)
   push(flowRef, {
     angle: Math.random() * Math.PI * 2,
     spawnTime: now,
