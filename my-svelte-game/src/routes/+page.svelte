@@ -1059,7 +1059,7 @@
 
   // Difficulty system
   let difficulty = 1;
-  const DIFFICULTY_INTERVAL_MS = 60000; // 60s between automatic difficulty increases
+  const DIFFICULTY_INTERVAL_MS = 30000; // 30s between automatic difficulty increases
   let difficultyLastAutoIncreaseAt = 0; // timestamp of last automatic difficulty increase
   let pauseAccumulatedMs = 0;           // total paused time since page load
   let pauseStartedAt: number | null = null; // when current pause started
@@ -1232,19 +1232,27 @@
   function spawnBurst(count: number, evilFraction = 0) {
     const now = Date.now();
     const spawnDuration = currentFlowDuration(); // Capture duration at spawn time
-    for (let i = 0; i < count; i++) {
+    
+    // Random multiplier: 2x, 2.4x, 2.8x, 3.2x, 3.6x, or 4x
+    const multiplierSteps = [2, 2.4, 2.8, 3.2, 3.6, 4];
+    const randomMultiplier = multiplierSteps[Math.floor(Math.random() * multiplierSteps.length)];
+    const actualCount = Math.ceil(count * randomMultiplier);
+    
+    for (let i = 0; i < actualCount; i++) {
       const delay = Math.random() * 500; // within .5s
       const isEvil = Math.random() < evilFraction;
       setTimeout(() => {
-        // Small speed variation based on angle hash for determinism across clients
-        const angleSeed = Math.random() * Math.PI * 2; // to keep existing randomness; could derive deterministic later
-        const speedBias = (Math.sin(angleSeed * 3) + 1) / 2; // 0..1
+        // Ultra random angle distribution
+        const angle = Math.random() * Math.PI * 2;
+        const speedBias = (Math.sin(angle * 3) + 1) / 2; // 0..1
         const extraSpeed = 1 + (speedBias - 0.5) * 0.2; // +/-10%
         spawnFlow(isEvil, { speedBias: Number(extraSpeed.toFixed(3)), duration: spawnDuration });
         recordFlowSpawn();
         if (isEvil) recordEvilFlowSpawn();
       }, delay);
     }
+    
+    console.debug(`Spawning wave: ${count} base × ${randomMultiplier} = ${actualCount} flows`);
   }
 
   function normalizeAngle(a: number) {
@@ -2099,21 +2107,26 @@
       const burstSize = Math.ceil(baseSize * getFlowSpawnMultiplier());
       spawnBurst(burstSize, 0); // normal flows only
       console.debug(`Burst spawned ${burstSize} normal flows for ${numPlayers} players (multiplier: ${getFlowSpawnMultiplier()})`);
-    }, 10000);
+    }, 3000); // 3 seconds between waves
 
-    // Evil burst every minute if difficulty >=2
+    // Evil burst every 5 seconds if difficulty >=2
     const evilSpawnInterval = setInterval(() => {
       if (pauseForNoPlayers) return; // paused
       if (difficulty >= 2) {
         const numPlayers = countOnlinePlayers();
         if (numPlayers === 0) return;
+        
+        // Random evil wave size - varies each time
         const baseSize = Math.min(16, Math.max(4, numPlayers * 2));
         const burstSize = Math.ceil(baseSize * getEvilFlowSpawnMultiplier());
-        const evilFraction = 0.4; // 40% evil inside this burst
+        
+        // Random evil fraction between 20% and 60%
+        const evilFraction = 0.2 + Math.random() * 0.4;
+        
         spawnBurst(burstSize, evilFraction);
         console.debug(`Evil burst spawned ${burstSize} flows (${Math.round(burstSize*evilFraction)} evil) difficulty=${difficulty}, multiplier=${getEvilFlowSpawnMultiplier()}`);
       }
-    }, 60000);
+    }, 5000); // 5 seconds between evil waves
 
     // Cleanup layer 5 flows every minute (these have left playable area)
     const layer5CleanupInterval = setInterval(async () => {
