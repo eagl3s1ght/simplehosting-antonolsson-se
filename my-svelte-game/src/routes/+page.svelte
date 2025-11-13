@@ -1946,6 +1946,10 @@
       // Start presence heartbeat (every 5s for better visibility)
       presenceInterval = setInterval(() => {
         if (myPlayer?.playerId) setLastSeen(myPlayer.playerId);
+        // Also update Player 2's lastSeen if local coop is active
+        if (player2Active && player2Player?.playerId) {
+          setLastSeen(player2Player.playerId);
+        }
       }, 5000);
       
       // Set initial lastSeen immediately
@@ -4438,7 +4442,7 @@
 {/if}
 
 <!-- Mobile Controls (bottom-center) -->
-{#if browser && (emulateMobileTouch || navigator.maxTouchPoints > 0)}
+{#if browser}
 <div style="position: absolute; bottom: {mobileControlBottomDistance}px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; align-items: flex-end; gap: 16px;">
   <!-- Main directional controls (center) -->
   <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
@@ -4522,60 +4526,176 @@
           {/if}
         </button>
       </div>
+      <!-- Keyboard shortcut indicator (only on desktop) -->
+      {#if !emulateMobileTouch && navigator.maxTouchPoints === 0}
+      <div style="display: flex; align-items: center; justify-content: center; margin-top: -4px;">
+        <kbd style="
+          background: {keys[' '] ? 'linear-gradient(180deg, #f9f9f9 0%, #e0e0e0 100%)' : 'linear-gradient(180deg, #2a2a2a 0%, #1a1a1a 100%)'};
+          border: 1px solid {keys[' '] ? '#999' : '#555'};
+          border-bottom: 2px solid {keys[' '] ? '#777' : '#333'};
+          border-radius: 4px;
+          padding: 3px 8px;
+          font-family: 'Segoe UI', Arial, sans-serif;
+          font-size: 11px;
+          font-weight: 600;
+          color: {keys[' '] ? '#333' : '#ccc'};
+          text-shadow: 0 1px 0 {keys[' '] ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.8)'};
+          box-shadow: {keys[' '] ? '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.7)' : '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1)'};
+          min-width: 45px;
+          text-align: center;
+          transition: all 0.1s ease;
+        ">SPACE</kbd>
+      </div>
+      {/if}
     </div>
   {/if}
 </div>
 {/if}
 
-<!-- Player 2 Mobile Controls (only show on touch devices when local coop is active) -->
-{#if browser && localCoopEnabled && player2Active && (emulateMobileTouch || navigator.maxTouchPoints > 0)}
+<!-- Player 2 Mobile Controls (only show when local coop is active) -->
+{#if browser && localCoopEnabled && player2Active}
 <div style="position: absolute; top: {mobileControlTopDistance}px; left: 50%; transform: translateX(-50%) rotate(180deg); z-index: 10; display: flex; align-items: flex-end; gap: 16px; opacity: 0.8;">
   <!-- Main directional controls (center) -->
   <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
-    <div style="font-size: 12px; color: #fff; text-align: center; margin-bottom: 4px; transform: rotate(180deg);">P2</div>
     <!-- Up button -->
-    <button
-      aria-label="Player 2 Up"
-      aria-pressed={mobileP2UpPressed}
-      on:pointerdown={() => { mobileP2UpPressed = true; }}
-      on:pointerup={() => { mobileP2UpPressed = false; }}
-      on:pointerleave={() => { mobileP2UpPressed = false; }}
-      on:pointercancel={() => { mobileP2UpPressed = false; }}
-      style={`background:${mobileP2UpPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2UpPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2UpPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2UpPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-    ⬆️
-    </button>
+    <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+      <button
+        aria-label="Player 2 Up"
+        aria-pressed={mobileP2UpPressed}
+        on:pointerdown={() => { mobileP2UpPressed = true; }}
+        on:pointerup={() => { mobileP2UpPressed = false; }}
+        on:pointerleave={() => { mobileP2UpPressed = false; }}
+        on:pointercancel={() => { mobileP2UpPressed = false; }}
+        style={`background:${mobileP2UpPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2UpPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2UpPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2UpPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+      ⬆️
+      </button>
+      <!-- Keyboard shortcut indicator (only on desktop) -->
+      {#if !emulateMobileTouch && navigator.maxTouchPoints === 0}
+      <div style="display: flex; align-items: center; justify-content: center; margin-top: -4px;">
+        <kbd style="
+          background: {keys['8'] || keys.Numpad8 ? 'linear-gradient(180deg, #f9f9f9 0%, #e0e0e0 100%)' : 'linear-gradient(180deg, #2a2a2a 0%, #1a1a1a 100%)'};
+          border: 1px solid {keys['8'] || keys.Numpad8 ? '#999' : '#555'};
+          border-bottom: 2px solid {keys['8'] || keys.Numpad8 ? '#777' : '#333'};
+          border-radius: 4px;
+          padding: 3px 6px;
+          font-family: 'Segoe UI', Arial, sans-serif;
+          font-size: 10px;
+          font-weight: 600;
+          color: {keys['8'] || keys.Numpad8 ? '#333' : '#ccc'};
+          text-shadow: 0 1px 0 {keys['8'] || keys.Numpad8 ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.8)'};
+          box-shadow: {keys['8'] || keys.Numpad8 ? '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.7)' : '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1)'};
+          min-width: 35px;
+          text-align: center;
+          transition: all 0.1s ease;
+          transform: rotate(180deg);
+        ">8</kbd>
+      </div>
+      {/if}
+    </div>
     <!-- Left, Down, Right buttons -->
     <div style="display: flex; gap: 8px;">
-      <button
-        aria-label="Player 2 Left"
-        aria-pressed={mobileP2LeftPressed}
-        on:pointerdown={() => { mobileP2LeftPressed = true; }}
-        on:pointerup={() => { mobileP2LeftPressed = false; }}
-        on:pointerleave={() => { mobileP2LeftPressed = false; }}
-        on:pointercancel={() => { mobileP2LeftPressed = false; }}
-        style={`background:${mobileP2LeftPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2LeftPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2LeftPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2LeftPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-    ⬅️
-      </button>
-      <button
-        aria-label="Player 2 Down"
-        aria-pressed={mobileP2DownPressed}
-        on:pointerdown={() => { mobileP2DownPressed = true; }}
-        on:pointerup={() => { mobileP2DownPressed = false; }}
-        on:pointerleave={() => { mobileP2DownPressed = false; }}
-        on:pointercancel={() => { mobileP2DownPressed = false; }}
-        style={`background:${mobileP2DownPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2DownPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2DownPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2DownPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-    ⬇️
-      </button>
-      <button
-        aria-label="Player 2 Right"
-        aria-pressed={mobileP2RightPressed}
-        on:pointerdown={() => { mobileP2RightPressed = true; }}
-        on:pointerup={() => { mobileP2RightPressed = false; }}
-        on:pointerleave={() => { mobileP2RightPressed = false; }}
-        on:pointercancel={() => { mobileP2RightPressed = false; }}
-        style={`background:${mobileP2RightPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2RightPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2RightPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2RightPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
-    ➡️
-      </button>
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+        <button
+          aria-label="Player 2 Left"
+          aria-pressed={mobileP2LeftPressed}
+          on:pointerdown={() => { mobileP2LeftPressed = true; }}
+          on:pointerup={() => { mobileP2LeftPressed = false; }}
+          on:pointerleave={() => { mobileP2LeftPressed = false; }}
+          on:pointercancel={() => { mobileP2LeftPressed = false; }}
+          style={`background:${mobileP2LeftPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2LeftPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2LeftPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2LeftPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+      ⬅️
+        </button>
+        <!-- Keyboard shortcut indicator (only on desktop) -->
+        {#if !emulateMobileTouch && navigator.maxTouchPoints === 0}
+        <div style="display: flex; align-items: center; justify-content: center; margin-top: -4px;">
+          <kbd style="
+            background: {keys['4'] || keys.Numpad4 ? 'linear-gradient(180deg, #f9f9f9 0%, #e0e0e0 100%)' : 'linear-gradient(180deg, #2a2a2a 0%, #1a1a1a 100%)'};
+            border: 1px solid {keys['4'] || keys.Numpad4 ? '#999' : '#555'};
+            border-bottom: 2px solid {keys['4'] || keys.Numpad4 ? '#777' : '#333'};
+            border-radius: 4px;
+            padding: 3px 6px;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 10px;
+            font-weight: 600;
+            color: {keys['4'] || keys.Numpad4 ? '#333' : '#ccc'};
+            text-shadow: 0 1px 0 {keys['4'] || keys.Numpad4 ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.8)'};
+            box-shadow: {keys['4'] || keys.Numpad4 ? '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.7)' : '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1)'};
+            min-width: 35px;
+            text-align: center;
+            transition: all 0.1s ease;
+            transform: rotate(180deg);
+          ">4</kbd>
+        </div>
+        {/if}
+      </div>
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+        <button
+          aria-label="Player 2 Down"
+          aria-pressed={mobileP2DownPressed}
+          on:pointerdown={() => { mobileP2DownPressed = true; }}
+          on:pointerup={() => { mobileP2DownPressed = false; }}
+          on:pointerleave={() => { mobileP2DownPressed = false; }}
+          on:pointercancel={() => { mobileP2DownPressed = false; }}
+          style={`background:${mobileP2DownPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2DownPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2DownPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2DownPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+      ⬇️
+        </button>
+        <!-- Keyboard shortcut indicator (only on desktop) -->
+        {#if !emulateMobileTouch && navigator.maxTouchPoints === 0}
+        <div style="display: flex; align-items: center; justify-content: center; margin-top: -4px;">
+          <kbd style="
+            background: {keys['2'] || keys.Numpad2 ? 'linear-gradient(180deg, #f9f9f9 0%, #e0e0e0 100%)' : 'linear-gradient(180deg, #2a2a2a 0%, #1a1a1a 100%)'};
+            border: 1px solid {keys['2'] || keys.Numpad2 ? '#999' : '#555'};
+            border-bottom: 2px solid {keys['2'] || keys.Numpad2 ? '#777' : '#333'};
+            border-radius: 4px;
+            padding: 3px 6px;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 10px;
+            font-weight: 600;
+            color: {keys['2'] || keys.Numpad2 ? '#333' : '#ccc'};
+            text-shadow: 0 1px 0 {keys['2'] || keys.Numpad2 ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.8)'};
+            box-shadow: {keys['2'] || keys.Numpad2 ? '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.7)' : '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1)'};
+            min-width: 35px;
+            text-align: center;
+            transition: all 0.1s ease;
+            transform: rotate(180deg);
+          ">2</kbd>
+        </div>
+        {/if}
+      </div>
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
+        <button
+          aria-label="Player 2 Right"
+          aria-pressed={mobileP2RightPressed}
+          on:pointerdown={() => { mobileP2RightPressed = true; }}
+          on:pointerup={() => { mobileP2RightPressed = false; }}
+          on:pointerleave={() => { mobileP2RightPressed = false; }}
+          on:pointercancel={() => { mobileP2RightPressed = false; }}
+          style={`background:${mobileP2RightPressed?'#557':'#334'}; color:#fff; border:2px solid ${mobileP2RightPressed?'#aad':'#557'}; border-radius:8px; width:60px; height:60px; font-size:24px; cursor:pointer; user-select:none; touch-action:none; box-shadow:${mobileP2RightPressed?'inset 0 2px 6px rgba(0,0,0,.6)':'0 2px 6px rgba(0,0,0,.3)'}; transform:${mobileP2RightPressed?'translateY(1px)':'none'}; transition: background .08s, border-color .08s, box-shadow .08s, transform .08s;`}>
+      ➡️
+        </button>
+        <!-- Keyboard shortcut indicator (only on desktop) -->
+        {#if !emulateMobileTouch && navigator.maxTouchPoints === 0}
+        <div style="display: flex; align-items: center; justify-content: center; margin-top: -4px;">
+          <kbd style="
+            background: {keys['6'] || keys.Numpad6 ? 'linear-gradient(180deg, #f9f9f9 0%, #e0e0e0 100%)' : 'linear-gradient(180deg, #2a2a2a 0%, #1a1a1a 100%)'};
+            border: 1px solid {keys['6'] || keys.Numpad6 ? '#999' : '#555'};
+            border-bottom: 2px solid {keys['6'] || keys.Numpad6 ? '#777' : '#333'};
+            border-radius: 4px;
+            padding: 3px 6px;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 10px;
+            font-weight: 600;
+            color: {keys['6'] || keys.Numpad6 ? '#333' : '#ccc'};
+            text-shadow: 0 1px 0 {keys['6'] || keys.Numpad6 ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.8)'};
+            box-shadow: {keys['6'] || keys.Numpad6 ? '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.7)' : '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1)'};
+            min-width: 35px;
+            text-align: center;
+            transition: all 0.1s ease;
+            transform: rotate(180deg);
+          ">6</kbd>
+        </div>
+        {/if}
+      </div>
     </div>
   </div>
   
@@ -4615,6 +4735,28 @@
             {/if}
           </button>
         </div>
+        <!-- Keyboard shortcut indicator (only on desktop) -->
+        {#if !emulateMobileTouch && navigator.maxTouchPoints === 0}
+        <div style="display: flex; align-items: center; justify-content: center; margin-top: -4px;">
+          <kbd style="
+            background: {keys['0'] || keys.Numpad0 ? 'linear-gradient(180deg, #f9f9f9 0%, #e0e0e0 100%)' : 'linear-gradient(180deg, #2a2a2a 0%, #1a1a1a 100%)'};
+            border: 1px solid {keys['0'] || keys.Numpad0 ? '#999' : '#555'};
+            border-bottom: 2px solid {keys['0'] || keys.Numpad0 ? '#777' : '#333'};
+            border-radius: 4px;
+            padding: 3px 6px;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 10px;
+            font-weight: 600;
+            color: {keys['0'] || keys.Numpad0 ? '#333' : '#ccc'};
+            text-shadow: 0 1px 0 {keys['0'] || keys.Numpad0 ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.8)'};
+            box-shadow: {keys['0'] || keys.Numpad0 ? '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.7)' : '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1)'};
+            min-width: 35px;
+            text-align: center;
+            transition: all 0.1s ease;
+            transform: rotate(180deg);
+          ">NUM 0</kbd>
+        </div>
+        {/if}
       </div>
     {/if}
   {/if}
