@@ -252,6 +252,8 @@
   let isIdle = false; // set to true once we go idle and stop DB activity
   // Mobile emulation (debug toggle)
   let emulateMobileTouch = false;
+  // Noclip cheat (debug toggle) - allows players to overlap on same layer
+  let noclipEnabled = false;
   let lastMovementTime = Date.now();
   let idleRemainingMs = IDLE_TIMEOUT_MS;
 
@@ -1234,6 +1236,41 @@
     }
   }
   
+  // Check if two player fragments would overlap on the same layer
+  function checkPlayerOverlap(angle1: number, angle2: number): boolean {
+    // Each player arc spans PIPE_WIDTH centered on their angle
+    const player1Start = normalizeAngle(angle1 - PIPE_WIDTH / 2);
+    const player1End = normalizeAngle(angle1 + PIPE_WIDTH / 2);
+    const player2Start = normalizeAngle(angle2 - PIPE_WIDTH / 2);
+    const player2End = normalizeAngle(angle2 + PIPE_WIDTH / 2);
+    
+    // Normalize all angles
+    const norm1Start = player1Start;
+    const norm1End = player1End;
+    const norm2Start = player2Start;
+    const norm2End = player2End;
+    
+    // Check if any part of player2's arc overlaps with player1's arc
+    // This handles wrap-around cases
+    const overlapsStart = 
+      (norm1Start <= norm1End) ?
+        (norm2Start >= norm1Start && norm2Start <= norm1End) :
+        (norm2Start >= norm1Start || norm2Start <= norm1End);
+    
+    const overlapsEnd = 
+      (norm1Start <= norm1End) ?
+        (norm2End >= norm1Start && norm2End <= norm1End) :
+        (norm2End >= norm1Start || norm2End <= norm1End);
+    
+    // Also check if player1 is entirely within player2 arc
+    const player1InPlayer2 = 
+      (norm2Start <= norm2End) ?
+        (norm1Start >= norm2Start && norm1Start <= norm2End) :
+        (norm1Start >= norm2Start || norm1Start <= norm2End);
+    
+    return overlapsStart || overlapsEnd || player1InPlayer2;
+  }
+  
   function checkNestCollisions(flow: Flow) {
     // Check if any active player's nest (in outermost layer) catches this flow
     const flowId = `${flow.spawnTime}_${flow.angle.toFixed(4)}`;
@@ -1478,10 +1515,69 @@
         const targetAngle = targetFlow.angle;
         const diff = normalizeAngle(targetAngle - botPlayer.angle);
         const turnSpeed = 0.008 * (1 + botPlayer.speedBoost * 0.01);
+        
+        let newAngle: number | null = null;
         if (diff > 0.01 && diff < Math.PI) {
-          botPlayer.angle = normalizeAngle(botPlayer.angle + turnSpeed);
+          newAngle = normalizeAngle(botPlayer.angle + turnSpeed);
         } else if (diff < -0.01 || diff > Math.PI) {
-          botPlayer.angle = normalizeAngle(botPlayer.angle - turnSpeed);
+          newAngle = normalizeAngle(botPlayer.angle - turnSpeed);
+        }
+        
+        // Check for collision before moving (unless noclip is enabled)
+        if (newAngle !== null) {
+          let canMove = noclipEnabled;
+          
+          if (!noclipEnabled) {
+            canMove = true;
+            
+            // Check collision with player 1
+            if (myPlayer && myLayer === botPlayer.layer) {
+              if (checkPlayerOverlap(newAngle, myAngle)) {
+                canMove = false;
+              }
+            }
+            
+            // Check collision with player 2
+            if (canMove && localCoopEnabled && player2Active && player2Player && player2Layer === botPlayer.layer) {
+              if (checkPlayerOverlap(newAngle, player2Angle)) {
+                canMove = false;
+              }
+            }
+            
+            // Check collision with other players
+            if (canMove) {
+              players.forEach((p) => {
+                if (!p || !p.id || p.id === botPlayer.playerId) return;
+                const ls = (p as any)?.lastSeen;
+                const activeFlag = (p as any)?.active !== false;
+                const fresh = typeof ls === 'number' ? (now - ls) < 30000 : true;
+                if (!activeFlag || !fresh) return;
+                
+                const otherLayer = p.layer ?? 0;
+                if (otherLayer === botPlayer.layer) {
+                  if (checkPlayerOverlap(newAngle, p.angle)) {
+                    canMove = false;
+                  }
+                }
+              });
+            }
+            
+            // Check collision with other bots
+            if (canMove) {
+              botPlayers.forEach((otherBot) => {
+                if (otherBot.playerId === botPlayer.playerId) return;
+                if (otherBot.layer === botPlayer.layer) {
+                  if (checkPlayerOverlap(newAngle, otherBot.angle)) {
+                    canMove = false;
+                  }
+                }
+              });
+            }
+          }
+          
+          if (canMove) {
+            botPlayer.angle = newAngle;
+          }
         }
       }
       
@@ -2171,13 +2267,100 @@
       
       // Input (with speed boost applied: +1% per boost)
       const effectiveDebugSpeed = debugSpeed * (1 + mySpeedBoost * 0.01);
-      if (keys.ArrowLeft || keys.a || keys.A) { 
-        myAngle = normalizeAngle(myAngle - effectiveDebugSpeed); 
-        lastMovementTime = Date.now();
+      
+      // Player 1 movement with collision detection (unless noclip is enabled)
+      if (keys.ArrowLeft || keys.a || keys.A) {
+        const newAngle = normalizeAngle(myAngle - effectiveDebugSpeed);
+        let canMove = noclipEnabled; // If noclip is on, always allow movement
+        
+        if (!noclipEnabled) {
+          // Check collision with all other players on the same layer
+          canMove = true;
+          players.forEach((p) => {
+            if (!p || !p.id || !myPlayer || p.id === myPlayer.playerId) return;
+            const ls = (p as any)?.lastSeen;
+            const activeFlag = (p as any)?.active !== false;
+            const fresh = typeof ls === 'number' ? (now - ls) < 30000 : true;
+            if (!activeFlag || !fresh) return;
+            
+            const otherLayer = p.layer ?? 0;
+            if (otherLayer === myLayer) {
+              if (checkPlayerOverlap(newAngle, p.angle)) {
+                canMove = false;
+              }
+            }
+          });
+          
+          // Check collision with player 2 if active
+          if (canMove && localCoopEnabled && player2Active && player2Player && player2Layer === myLayer) {
+            if (checkPlayerOverlap(newAngle, player2Angle)) {
+              canMove = false;
+            }
+          }
+          
+          // Check collision with bots on same layer
+          if (canMove) {
+            botPlayers.forEach((bot) => {
+              if (bot.layer === myLayer) {
+                if (checkPlayerOverlap(newAngle, bot.angle)) {
+                  canMove = false;
+                }
+              }
+            });
+          }
+        }
+        
+        if (canMove) {
+          myAngle = newAngle;
+          lastMovementTime = Date.now();
+        }
       }
-      if (keys.ArrowRight || keys.d || keys.D) { 
-        myAngle = normalizeAngle(myAngle + effectiveDebugSpeed); 
-        lastMovementTime = Date.now();
+      
+      if (keys.ArrowRight || keys.d || keys.D) {
+        const newAngle = normalizeAngle(myAngle + effectiveDebugSpeed);
+        let canMove = noclipEnabled; // If noclip is on, always allow movement
+        
+        if (!noclipEnabled) {
+          // Check collision with all other players on the same layer
+          canMove = true;
+          players.forEach((p) => {
+            if (!p || !p.id || !myPlayer || p.id === myPlayer.playerId) return;
+            const ls = (p as any)?.lastSeen;
+            const activeFlag = (p as any)?.active !== false;
+            const fresh = typeof ls === 'number' ? (now - ls) < 30000 : true;
+            if (!activeFlag || !fresh) return;
+            
+            const otherLayer = p.layer ?? 0;
+            if (otherLayer === myLayer) {
+              if (checkPlayerOverlap(newAngle, p.angle)) {
+                canMove = false;
+              }
+            }
+          });
+          
+          // Check collision with player 2 if active
+          if (canMove && localCoopEnabled && player2Active && player2Player && player2Layer === myLayer) {
+            if (checkPlayerOverlap(newAngle, player2Angle)) {
+              canMove = false;
+            }
+          }
+          
+          // Check collision with bots on same layer
+          if (canMove) {
+            botPlayers.forEach((bot) => {
+              if (bot.layer === myLayer) {
+                if (checkPlayerOverlap(newAngle, bot.angle)) {
+                  canMove = false;
+                }
+              }
+            });
+          }
+        }
+        
+        if (canMove) {
+          myAngle = newAngle;
+          lastMovementTime = Date.now();
+        }
       }
       
         // Layer switching with debounce (200ms between changes)
@@ -2216,12 +2399,101 @@
           // PC: Numpad 4 (left), Numpad 6 (right)
           // Mobile: on-screen buttons
           if (keys['4'] || keys.Numpad4 || mobileP2LeftPressed) {
-            player2Angle = normalizeAngle(player2Angle - effectiveP2Speed);
-            if (player2Player) updateAngle(player2Player.playerId, player2Angle);
+            const newAngle = normalizeAngle(player2Angle - effectiveP2Speed);
+            let canMove = noclipEnabled;
+            
+            if (!noclipEnabled) {
+              canMove = true;
+              // Check collision with player 1
+              if (myPlayer && myLayer === player2Layer) {
+                if (checkPlayerOverlap(newAngle, myAngle)) {
+                  canMove = false;
+                }
+              }
+              
+              // Check collision with other players
+              if (canMove) {
+                players.forEach((p) => {
+                  if (!p || !p.id || (player2Player && p.id === player2Player.playerId)) return;
+                  const ls = (p as any)?.lastSeen;
+                  const activeFlag = (p as any)?.active !== false;
+                  const fresh = typeof ls === 'number' ? (now - ls) < 30000 : true;
+                  if (!activeFlag || !fresh) return;
+                  
+                  const otherLayer = p.layer ?? 0;
+                  if (otherLayer === player2Layer) {
+                    if (checkPlayerOverlap(newAngle, p.angle)) {
+                      canMove = false;
+                    }
+                  }
+                });
+              }
+              
+              // Check collision with bots
+              if (canMove) {
+                botPlayers.forEach((bot) => {
+                  if (bot.layer === player2Layer) {
+                    if (checkPlayerOverlap(newAngle, bot.angle)) {
+                      canMove = false;
+                    }
+                  }
+                });
+              }
+            }
+            
+            if (canMove) {
+              player2Angle = newAngle;
+              if (player2Player) updateAngle(player2Player.playerId, player2Angle);
+            }
           }
+          
           if (keys['6'] || keys.Numpad6 || mobileP2RightPressed) {
-            player2Angle = normalizeAngle(player2Angle + effectiveP2Speed);
-            if (player2Player) updateAngle(player2Player.playerId, player2Angle);
+            const newAngle = normalizeAngle(player2Angle + effectiveP2Speed);
+            let canMove = noclipEnabled;
+            
+            if (!noclipEnabled) {
+              canMove = true;
+              // Check collision with player 1
+              if (myPlayer && myLayer === player2Layer) {
+                if (checkPlayerOverlap(newAngle, myAngle)) {
+                  canMove = false;
+                }
+              }
+              
+              // Check collision with other players
+              if (canMove) {
+                players.forEach((p) => {
+                  if (!p || !p.id || (player2Player && p.id === player2Player.playerId)) return;
+                  const ls = (p as any)?.lastSeen;
+                  const activeFlag = (p as any)?.active !== false;
+                  const fresh = typeof ls === 'number' ? (now - ls) < 30000 : true;
+                  if (!activeFlag || !fresh) return;
+                  
+                  const otherLayer = p.layer ?? 0;
+                  if (otherLayer === player2Layer) {
+                    if (checkPlayerOverlap(newAngle, p.angle)) {
+                      canMove = false;
+                    }
+                  }
+                });
+              }
+              
+              // Check collision with bots
+              if (canMove) {
+                botPlayers.forEach((bot) => {
+                  if (bot.layer === player2Layer) {
+                    if (checkPlayerOverlap(newAngle, bot.angle)) {
+                      canMove = false;
+                    }
+                  }
+                });
+              }
+            }
+            
+            if (canMove) {
+              player2Angle = newAngle;
+              if (player2Player) updateAngle(player2Player.playerId, player2Angle);
+            }
           }
           
           // Layer switching
@@ -3762,6 +4034,19 @@
     </label>
     <div style="margin-top:4px; font-size:11px; opacity:.65;">
       Makes desktop environment show mobile on-screen controls for Player 1 & 2. Useful for testing local co-op mobile controls without a touch device.
+    </div>
+  </div>
+  
+  <div style="margin-top:12px; font-size:13px; line-height:1.4; background:#2a1a1a; padding:8px 10px; border-radius:6px; border: 1px solid #5a3a3a;">
+    <b style="color: #ff6b6b;">🎮 Cheats</b>
+    <br />
+    <label style="display:flex; align-items:center; gap:6px; margin-top:4px; font-size:12px;">
+      <input type="checkbox" bind:checked={noclipEnabled} on:change={() => {
+        console.log('[Noclip]', noclipEnabled ? 'ENABLED' : 'DISABLED');
+      }} /> Cheat: No-clip (allow overlap)
+    </label>
+    <div style="margin-top:4px; font-size:11px; opacity:.65;">
+      Allows player fragments on the same layer to overlap and pass through each other. Normally, players cannot step on each other's positions.
     </div>
   </div>
   </div>
