@@ -43,8 +43,14 @@ export const ROOM = 'publicGame';  // Single global room
 /** @param {(state:any)=>void} setState 
   * @param {{ angle?: number, layer?: number, colorIndex?: number }} [options={}] */
 export async function joinGame(setState, options = {}) {
-  return signInAnonymously(auth).then((userCredential) => {
+  return signInAnonymously(auth).then(async (userCredential) => {
     const playerId = userCredential.user.uid;
+    
+    // Check if player already exists to restore their score
+    const playerRef = ref(db, `${ROOM}/players/${playerId}`);
+    const existingSnapshot = await get(playerRef);
+    const existingPlayer = existingSnapshot.exists() ? existingSnapshot.val() : null;
+    
     // Minimal player meta: keep only country, language, creationTime, lastSignInTime
     let meta = {};
     try {
@@ -57,17 +63,29 @@ export async function joinGame(setState, options = {}) {
           : null
       };
     } catch {}
+    
+    // Preserve score if returning player, otherwise start at 0
+    const preservedScore = existingPlayer?.score ?? 0;
+    const preservedColorIndex = existingPlayer?.colorIndex ?? (options.colorIndex !== undefined ? options.colorIndex : Math.floor(Math.random() * 12));
+    const preservedCreatedAt = existingPlayer?.createdAt ?? Date.now();
+    
     const playerData = {
       id: playerId,
       angle: options.angle !== undefined ? options.angle : Math.random() * Math.PI * 2,
-      score: 0,
+      score: preservedScore, // Restore previous score
       layer: options.layer !== undefined ? options.layer : 0,
-      colorIndex: options.colorIndex !== undefined ? options.colorIndex : Math.floor(Math.random() * 12),
-      createdAt: Date.now(), // Persist creation timestamp for visibility across clients
+      colorIndex: preservedColorIndex, // Restore previous color if available
+      createdAt: preservedCreatedAt, // Keep original creation time
       active: true,
       meta
     };
-    set(ref(db, `${ROOM}/players/${playerId}`), playerData);
+    
+    await set(playerRef, playerData);
+    
+    if (existingPlayer && preservedScore > 0) {
+      console.log(`[JOIN] Returning player ${playerId} - restored score: ${preservedScore}`);
+    }
+    
     return { playerId, playerData };
   });
 }
